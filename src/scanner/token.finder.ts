@@ -67,10 +67,10 @@ export class TokenFinder {
 
     // Filter and sort
     const filtered = Array.from(byMint.values())
-      .filter(t => t.mcapUsd > 0 && t.mcapUsd <= CONFIG.MAX_MCAP_USD)
+      .filter(t => t.mcapUsd > 0 && t.mcapUsd <= CONFIG.MAX_MCAP_USD && t.mcapUsd >= CONFIG.MIN_MCAP_USD)
       .sort((a, b) => a.mcapUsd - b.mcapUsd); // Lowest mcap first (earliest entry)
 
-    logger.info(`Found ${filtered.length} tokens under $${CONFIG.MAX_MCAP_USD} mcap`);
+    logger.info(`Found ${filtered.length} tokens in mcap $${CONFIG.MIN_MCAP_USD}–$${CONFIG.MAX_MCAP_USD}`);
     return filtered;
   }
 

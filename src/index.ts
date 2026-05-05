@@ -1,6 +1,7 @@
 import { Connection } from '@solana/web3.js';
 import { CONFIG } from './config';
 import { logger } from './utils/logger';
+import { decryptKey } from './utils/wallet.crypto';
 import { TweetMonitor, Tweet } from './monitor/tweet.monitor';
 import { TokenFinder, FoundToken } from './scanner/token.finder';
 import { GmgnSwap } from './swap/gmgn.swap';
@@ -59,6 +60,18 @@ class ElonSniper {
   async start(): Promise<void> {
     this.startTime = Date.now();
 
+    // Decrypt stored wallet if available
+    const encryptedKey = process.env.WALLET_PRIVATE_KEY_ENCRYPTED;
+    if (encryptedKey) {
+      try {
+        const decrypted = decryptKey(encryptedKey);
+        this.gmgnSwap.reloadWallet(decrypted);
+        logger.info('🔑 Wallet loaded from encrypted storage');
+      } catch {
+        logger.warn('⚠️ Failed to decrypt stored wallet key');
+      }
+    }
+
     logger.info('='.repeat(50));
     logger.info('  ELON SNIPER BOT');
     logger.info(`  Mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`);
@@ -72,10 +85,12 @@ class ElonSniper {
 
     // Dashboard
     registerDashboardHandlers({
-      getState:  () => this.getDashboardState(),
-      onSell:    (mint) => this.executeSellFromDashboard(mint),
-      onPause:   () => { this.paused = true;  logger.info('⏸ Bot paused from dashboard'); },
-      onResume:  () => { this.paused = false; logger.info('▶ Bot resumed from dashboard'); },
+      getState:         () => this.getDashboardState(),
+      onSell:           (mint) => this.executeSellFromDashboard(mint),
+      onPause:          () => { this.paused = true;  logger.info('⏸ Bot paused from dashboard'); },
+      onResume:         () => { this.paused = false; logger.info('▶ Bot resumed from dashboard'); },
+      onWalletReload:   (key) => this.gmgnSwap.reloadWallet(key),
+      getWalletAddress: () => this.gmgnSwap.getWalletAddress(),
     });
     await startDashboardServer();
 
@@ -86,6 +101,10 @@ class ElonSniper {
       onBuySelected:   (mint, symbol) => this.executeBuyFromTelegram(mint, symbol),
       onSellSelected:  (mint, symbol) => this.executeSellFromTelegram(mint, symbol),
       getHistory:      () => this.getHistoryMessage(),
+      onPause:         () => { this.paused = true;  logger.info('⏸ Bot paused via Telegram'); },
+      onResume:        () => { this.paused = false; logger.info('▶ Bot resumed via Telegram'); },
+      getBalance:      () => this.getBalanceMessage(),
+      getPnl:          () => this.getPnlMessage(),
     });
     telegram.startPolling();
 
@@ -674,8 +693,68 @@ class ElonSniper {
       tweetsDetected:   this.tweetsDetected,
       buysExecuted:     this.buysExecuted,
       solBalance:       this.solBalance,
+      solPriceUsd:      this.solPriceUsd,
       activePositions:  positions,
     };
+  }
+
+  private getBalanceMessage(): string {
+    const solUsd = this.solBalance * this.solPriceUsd;
+    const pnlUsd = this.totalPnlSol * this.solPriceUsd;
+    const sign   = this.totalPnlSol >= 0 ? '+' : '';
+    const pSign  = pnlUsd >= 0 ? '+' : '';
+    return [
+      `💰 <b>Saldo</b>`,
+      '',
+      `SOL: <b>${this.solBalance.toFixed(4)} SOL</b>`,
+      this.solPriceUsd > 0 ? `USD: ≈ <b>$${solUsd.toFixed(2)}</b>` : '',
+      '',
+      `📈 Total PnL: <b>${sign}${this.totalPnlSol.toFixed(4)} SOL</b>`,
+      this.solPriceUsd > 0 ? `         ≈ <b>${pSign}$${Math.abs(pnlUsd).toFixed(2)}</b>` : '',
+      '',
+      `💵 SOL Price: $${this.solPriceUsd.toFixed(2)}`,
+      `📊 Mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`,
+    ].filter(l => l !== '').join('\n');
+  }
+
+  private async getPnlMessage(): Promise<string> {
+    const sells = await db.trade.findMany({
+      where: { type: 'SELL' },
+      select: { pnlSol: true, pnlPercent: true, createdAt: true },
+    });
+
+    if (sells.length === 0) return '📊 Belum ada trade yang selesai.';
+
+    const now = Date.now();
+    const since1d  = new Date(now - 86_400_000);
+    const since7d  = new Date(now - 7 * 86_400_000);
+    const since30d = new Date(now - 30 * 86_400_000);
+
+    const calc = (rows: typeof sells) => {
+      const total  = rows.length;
+      const wins   = rows.filter(r => (r.pnlSol ?? 0) > 0).length;
+      const pnlSol = rows.reduce((s, r) => s + (r.pnlSol ?? 0), 0);
+      const pnlUsd = pnlSol * this.solPriceUsd;
+      const wr     = total > 0 ? (wins / total * 100).toFixed(0) : '0';
+      const sign   = pnlSol >= 0 ? '+' : '';
+      const uSign  = pnlUsd >= 0 ? '+' : '';
+      return `${sign}${pnlSol.toFixed(3)} SOL (${uSign}$${Math.abs(pnlUsd).toFixed(2)}) | ${wr}% WR | ${wins}W/${total - wins}L`;
+    };
+
+    const d1  = sells.filter(r => r.createdAt >= since1d);
+    const d7  = sells.filter(r => r.createdAt >= since7d);
+    const d30 = sells.filter(r => r.createdAt >= since30d);
+
+    return [
+      `📊 <b>PnL Report</b>`,
+      '',
+      `24h:  ${d1.length  ? calc(d1)  : 'no trades'}`,
+      `7d:   ${d7.length  ? calc(d7)  : 'no trades'}`,
+      `30d:  ${d30.length ? calc(d30) : 'no trades'}`,
+      `All:  ${calc(sells)}`,
+      '',
+      `💵 SOL Price: $${this.solPriceUsd.toFixed(2)}`,
+    ].join('\n');
   }
 
   private getStatusMessage(): string {

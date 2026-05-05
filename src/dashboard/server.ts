@@ -9,6 +9,10 @@ import { logger } from '../utils/logger';
 import { runBacktest } from '../backtest/runner';
 import { CONFIG } from '../config';
 import path from 'path';
+import fs from 'fs';
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
+import { encryptKey, decryptKey } from '../utils/wallet.crypto';
 
 const DASHBOARD_PORT = parseInt(process.env.PORT || process.env.DASHBOARD_PORT || '3001');
 
@@ -20,7 +24,16 @@ export interface BotState {
   tweetsDetected: number;
   buysExecuted: number;
   solBalance: number;
+  solPriceUsd: number;
   activePositions: ActivePositionInfo[];
+}
+
+function periodToDate(period: string): Date | null {
+  const now = new Date();
+  if (period === '1d')  { now.setDate(now.getDate() - 1);   return now; }
+  if (period === '7d')  { now.setDate(now.getDate() - 7);   return now; }
+  if (period === '30d') { now.setDate(now.getDate() - 30);  return now; }
+  return null;
 }
 
 export interface ActivePositionInfo {
@@ -42,23 +55,29 @@ export interface ActivePositionInfo {
 let wss: WebSocketServer | null = null;
 let botStateGetter: () => BotState = () => ({
   mode: 'PAPER', running: false, paused: false, uptime: 0,
-  tweetsDetected: 0, buysExecuted: 0, solBalance: 0,
+  tweetsDetected: 0, buysExecuted: 0, solBalance: 0, solPriceUsd: 0,
   activePositions: [],
 });
 let sellPositionHandler:  (mint: string) => Promise<void> = async () => {};
 let pauseHandler:  () => void = () => {};
 let resumeHandler: () => void = () => {};
+let walletReloadHandler: (key: string) => void = () => {};
+let walletAddressGetter: () => string | null = () => null;
 
 export function registerDashboardHandlers(opts: {
-  getState:  () => BotState;
-  onSell:    (mint: string) => Promise<void>;
-  onPause:   () => void;
-  onResume:  () => void;
+  getState:       () => BotState;
+  onSell:         (mint: string) => Promise<void>;
+  onPause:        () => void;
+  onResume:       () => void;
+  onWalletReload: (key: string) => void;
+  getWalletAddress: () => string | null;
 }) {
   botStateGetter       = opts.getState;
   sellPositionHandler  = opts.onSell;
   pauseHandler         = opts.onPause;
   resumeHandler        = opts.onResume;
+  walletReloadHandler  = opts.onWalletReload;
+  walletAddressGetter  = opts.getWalletAddress;
 }
 
 export function broadcastState() {
@@ -124,8 +143,10 @@ export async function startDashboardServer() {
   });
 
   app.get('/api/pnl', async c => {
+    const period = c.req.query('period') || 'all';
+    const since  = periodToDate(period);
     const sells = await db.trade.findMany({
-      where: { type: 'SELL', pnlSol: { not: null } },
+      where: { type: 'SELL', pnlSol: { not: null }, ...(since ? { createdAt: { gte: since } } : {}) },
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true, pnlSol: true, pnlPercent: true, symbol: true },
     });
@@ -135,6 +156,127 @@ export async function startDashboardServer() {
       return { date: s.createdAt, pnlSol: s.pnlSol, pnlPercent: s.pnlPercent, cumulative: parseFloat(cumulative.toFixed(4)), symbol: s.symbol };
     });
     return c.json(points);
+  });
+
+  app.get('/api/stats', async c => {
+    const period = c.req.query('period') || 'all';
+    const since  = periodToDate(period);
+    const where  = { type: 'SELL', ...(since ? { createdAt: { gte: since } } : {}) };
+    const sells  = await db.trade.findMany({ where, select: { pnlSol: true, pnlPercent: true } });
+
+    const totalPnlSol = sells.reduce((s, t) => s + (t.pnlSol ?? 0), 0);
+    const wins        = sells.filter(t => (t.pnlSol ?? 0) > 0).length;
+    const total       = sells.length;
+    const winRate     = total > 0 ? (wins / total) * 100 : 0;
+    const avgPnl      = total > 0 ? sells.reduce((s, t) => s + (t.pnlPercent ?? 0), 0) / total : 0;
+
+    return c.json({ totalPnlSol: parseFloat(totalPnlSol.toFixed(4)), wins, losses: total - wins, total, winRate: parseFloat(winRate.toFixed(1)), avgPnlPercent: parseFloat(avgPnl.toFixed(1)) });
+  });
+
+  // ─── Config endpoints ─────────────────────────────────────────────
+
+  const EDITABLE_CONFIG = [
+    'BUY_AMOUNT_SOL', 'MAX_SLIPPAGE_BPS', 'STOP_LOSS_PERCENT',
+    'TP1_PERCENT', 'TP1_SELL_PERCENT', 'TP2_PERCENT',
+    'PRIORITY_FEE_BUY_SOL', 'PRIORITY_FEE_SELL_SOL', 'MAX_FEE_SOL',
+    'PUMP_MAX_POSITIONS', 'PUMP_MAX_HOLD_MINUTES',
+    'PUMP_MIN_DEV_BUY_SOL', 'PUMP_MAX_DEV_BUY_SOL',
+    'PUMP_MIN_MCAP_SOL', 'PUMP_MAX_MCAP_SOL',
+    'AUTO_SELL', 'ANTI_MEV',
+  ] as const;
+
+  app.get('/api/config', c => {
+    const out: Record<string, unknown> = {};
+    for (const k of EDITABLE_CONFIG) out[k] = (CONFIG as any)[k];
+    out['PAPER_TRADING'] = CONFIG.PAPER_TRADING;
+    return c.json(out);
+  });
+
+  app.post('/api/config', async c => {
+    const body = await c.req.json().catch(() => ({}));
+    const updated: Record<string, string> = {};
+
+    for (const key of [...EDITABLE_CONFIG, 'PAPER_TRADING'] as string[]) {
+      if (!(key in body)) continue;
+      const val = body[key];
+      // Update in-memory CONFIG
+      if (typeof val === 'boolean') {
+        (CONFIG as any)[key] = val;
+        updated[key] = String(val);
+      } else if (typeof val === 'number') {
+        (CONFIG as any)[key] = val;
+        updated[key] = String(val);
+      }
+    }
+
+    // Patch .env file for persistence
+    try {
+      const envPath = path.join(process.cwd(), '.env');
+      let content = fs.readFileSync(envPath, 'utf8');
+      for (const [key, val] of Object.entries(updated)) {
+        const re = new RegExp(`^(${key}\\s*=)[^\\n]*`, 'm');
+        if (re.test(content)) {
+          content = content.replace(re, `$1${val}`);
+        } else {
+          content += `\n${key}=${val}`;
+        }
+      }
+      fs.writeFileSync(envPath, content);
+    } catch (e) {
+      logger.warn('Could not write .env: ' + e);
+    }
+
+    logger.info(`⚙ Config updated: ${Object.keys(updated).join(', ')}`);
+    return c.json({ ok: true, updated });
+  });
+
+  // ─── Wallet endpoints ─────────────────────────────────────────────
+
+  app.get('/api/wallet', c => {
+    const address = walletAddressGetter();
+    const encryptedKey = process.env.WALLET_PRIVATE_KEY_ENCRYPTED || '';
+    return c.json({ connected: !!address, address, hasStoredKey: !!encryptedKey });
+  });
+
+  app.post('/api/wallet/connect', async c => {
+    const { privateKey } = await c.req.json().catch(() => ({}));
+    if (!privateKey) return c.json({ ok: false, error: 'No private key provided' }, 400);
+
+    try {
+      const keypair = Keypair.fromSecretKey(bs58.decode(privateKey.trim()));
+      const address = keypair.publicKey.toBase58();
+
+      // Encrypt and persist to .env
+      const encrypted = encryptKey(privateKey.trim());
+      const envPath = path.join(process.cwd(), '.env');
+      let content = fs.readFileSync(envPath, 'utf8');
+      const re = /^WALLET_PRIVATE_KEY_ENCRYPTED=.*$/m;
+      const line = `WALLET_PRIVATE_KEY_ENCRYPTED=${encrypted}`;
+      content = re.test(content) ? content.replace(re, line) : content + `\n${line}`;
+      // Clear plaintext key for safety
+      content = content.replace(/^WALLET_PRIVATE_KEY=.+$/m, 'WALLET_PRIVATE_KEY=');
+      fs.writeFileSync(envPath, content);
+      process.env.WALLET_PRIVATE_KEY_ENCRYPTED = encrypted;
+
+      // Reload in-memory wallet
+      walletReloadHandler(privateKey.trim());
+      logger.info(`🔑 Wallet connected via dashboard: ${address}`);
+      return c.json({ ok: true, address });
+    } catch {
+      return c.json({ ok: false, error: 'Private key tidak valid. Pastikan format base58.' }, 400);
+    }
+  });
+
+  app.post('/api/wallet/disconnect', c => {
+    const envPath = path.join(process.cwd(), '.env');
+    let content = fs.readFileSync(envPath, 'utf8');
+    content = content.replace(/^WALLET_PRIVATE_KEY_ENCRYPTED=.*$/m, 'WALLET_PRIVATE_KEY_ENCRYPTED=');
+    content = content.replace(/^WALLET_PRIVATE_KEY=.+$/m, 'WALLET_PRIVATE_KEY=');
+    fs.writeFileSync(envPath, content);
+    process.env.WALLET_PRIVATE_KEY_ENCRYPTED = '';
+    walletReloadHandler('');
+    logger.info('🔑 Wallet disconnected');
+    return c.json({ ok: true });
   });
 
   app.get('/api/events', async c => {

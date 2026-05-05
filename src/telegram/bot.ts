@@ -27,10 +27,18 @@ const ENABLED = !!(CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_ID);
 type SellCallback = () => Promise<void>;
 type StatusCallback = () => string;
 type HistoryCallback = () => Promise<string>;
+type PauseCallback = () => void;
+type ResumeCallback = () => void;
+type BalanceCallback = () => string;
+type PnlCallback = () => Promise<string>;
 
 let onSellCommand: SellCallback | null = null;
 let onStatusCommand: StatusCallback | null = null;
 let onHistoryCommand: HistoryCallback | null = null;
+let onPauseCommand: PauseCallback | null = null;
+let onResumeCommand: ResumeCallback | null = null;
+let onBalanceCommand: BalanceCallback | null = null;
+let onPnlCommand: PnlCallback | null = null;
 let pollingOffset = 0;
 let pollingActive = false;
 
@@ -274,12 +282,20 @@ export function registerHandlers(handlers: {
   onBuySelected: BuyCallback;
   onSellSelected: SellByMintCallback;
   getHistory: HistoryCallback;
+  onPause: PauseCallback;
+  onResume: ResumeCallback;
+  getBalance: BalanceCallback;
+  getPnl: PnlCallback;
 }): void {
   onStatusCommand  = handlers.getStatus;
   onSellCommand    = handlers.onSell;
   onBuySelected    = handlers.onBuySelected;
   onSellSelected   = handlers.onSellSelected;
   onHistoryCommand = handlers.getHistory;
+  onPauseCommand   = handlers.onPause;
+  onResumeCommand  = handlers.onResume;
+  onBalanceCommand = handlers.getBalance;
+  onPnlCommand     = handlers.getPnl;
 }
 
 export function startPolling(): void {
@@ -325,6 +341,20 @@ async function pollLoop(): Promise<void> {
           if (onSellCommand) await onSellCommand();
         } else if (text === '/history') {
           if (onHistoryCommand) await send(await onHistoryCommand());
+        } else if (text === '/pause' || text === '/stop') {
+          if (onPauseCommand) {
+            onPauseCommand();
+            await send('⏸ <b>Bot dijeda.</b> Tidak akan buka posisi baru.\nKirim /resume untuk lanjutkan.');
+          }
+        } else if (text === '/resume' || text === '/start_bot') {
+          if (onResumeCommand) {
+            onResumeCommand();
+            await send('▶️ <b>Bot dilanjutkan.</b> Siap snipe token baru!');
+          }
+        } else if (text === '/saldo' || text === '/balance') {
+          if (onBalanceCommand) await send(onBalanceCommand());
+        } else if (text === '/pnl') {
+          if (onPnlCommand) await send(await onPnlCommand());
         } else if (text === '/tunnel') {
           await send('⏳ Starting tunnel...');
           await send(await startTunnel());
@@ -347,13 +377,17 @@ async function pollLoop(): Promise<void> {
           await send([
             `🤖 <b>Elon Sniper Bot</b>`,
             '',
-            `/sniper - Status & active positions`,
-            `/history - Last 10 completed trades`,
-            `/sell - Sell all positions`,
-            `/tunnel - Start dashboard tunnel (dapat URL)`,
+            `/sniper - Status & posisi aktif`,
+            `/saldo - Cek saldo SOL`,
+            `/pnl - Statistik profit/loss`,
+            `/history - 10 trade terakhir`,
+            `/sell - Jual semua posisi`,
+            `/pause - Jeda bot (stop buka posisi baru)`,
+            `/resume - Lanjutkan bot`,
+            `/tunnel - Start dashboard tunnel`,
             `/tunnel stop - Stop tunnel`,
-            `/config - Show configuration`,
-            `/help - This message`,
+            `/config - Konfigurasi`,
+            `/help - Pesan ini`,
           ].join('\n'));
         }
       }

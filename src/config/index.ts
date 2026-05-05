@@ -10,6 +10,7 @@ export const CONFIG = {
 
   // Sniper
   BUY_AMOUNT_SOL: parseFloat(process.env.BUY_AMOUNT_SOL || '0.5'),
+  MIN_MCAP_USD: parseFloat(process.env.MIN_MCAP_USD || '0'),
   MAX_MCAP_USD: parseFloat(process.env.MAX_MCAP_USD || '5000'),
   TAKE_PROFIT_PERCENT: parseFloat(process.env.TAKE_PROFIT_PERCENT || '500'),
   STOP_LOSS_PERCENT: parseFloat(process.env.STOP_LOSS_PERCENT || '50'),

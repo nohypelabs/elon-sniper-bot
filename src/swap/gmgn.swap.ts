@@ -57,6 +57,24 @@ export class GmgnSwap {
     }
   }
 
+  getWalletAddress(): string | null {
+    return this.wallet?.publicKey.toBase58() ?? null;
+  }
+
+  reloadWallet(privateKey: string): void {
+    if (!privateKey) {
+      this.wallet = null;
+      logger.info('Wallet disconnected');
+      return;
+    }
+    try {
+      this.wallet = Keypair.fromSecretKey(bs58.decode(privateKey));
+      logger.info(`Wallet loaded: ${this.wallet.publicKey.toBase58()}`);
+    } catch {
+      logger.error('reloadWallet: invalid private key');
+    }
+  }
+
   /**
    * Buy token with SOL
    */

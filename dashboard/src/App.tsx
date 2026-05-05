@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Activity, TrendingUp, Zap, ShoppingCart, Wallet, Clock, Radio, Pause, Play, FlaskConical, Download } from 'lucide-react'
+import { Activity, TrendingUp, Zap, ShoppingCart, Wallet, Clock, Radio, Pause, Play, FlaskConical, Download, Settings } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell,
 } from 'recharts'
 import { useBot } from './hooks/useBot'
-import type { Trade, PairedTrade, PnlPoint } from './types'
+import type { Trade, PairedTrade, PnlPoint, Stats, BotConfig } from './types'
 
 function fmt(n: number, d = 2) { return n.toFixed(d) }
 function fmtPrice(n: number): string {
@@ -200,6 +200,217 @@ function BacktestTab() {
   )
 }
 
+// ─── Settings Tab ─────────────────────────────────────────────────
+
+function WalletConnect() {
+  const [wallet, setWallet]     = useState<{ connected: boolean; address: string | null; hasStoredKey: boolean } | null>(null)
+  const [input, setInput]       = useState('')
+  const [show, setShow]         = useState(false)
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState('')
+
+  const load = () => fetch('/api/wallet').then(r => r.json()).then(setWallet)
+  useEffect(() => { load() }, [])
+
+  const connect = async () => {
+    setError(''); setLoading(true)
+    const r = await fetch('/api/wallet/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ privateKey: input.trim() }),
+    })
+    const d = await r.json()
+    setLoading(false)
+    if (d.ok) { setInput(''); setShow(false); load() }
+    else setError(d.error || 'Gagal connect wallet')
+  }
+
+  const disconnect = async () => {
+    if (!confirm('Disconnect wallet? Private key akan dihapus dari server.')) return
+    await fetch('/api/wallet/disconnect', { method: 'POST' })
+    load()
+  }
+
+  if (!wallet) return null
+
+  return (
+    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <h3 className="text-sm font-semibold text-slate-300 mb-4">Wallet</h3>
+
+      {wallet.connected ? (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-900/20 border border-emerald-800/40 rounded-lg">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-emerald-400 font-medium">Connected</p>
+              <p className="text-xs text-slate-400 font-mono truncate">{wallet.address}</p>
+            </div>
+          </div>
+          <button onClick={disconnect}
+            className="w-full py-2 rounded-lg bg-red-900/30 text-red-400 border border-red-900/50 text-xs font-medium hover:bg-red-900/50 transition-all">
+            Disconnect Wallet
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/50 border border-slate-700 rounded-lg">
+            <span className="w-2 h-2 rounded-full bg-slate-600 shrink-0" />
+            <p className="text-xs text-slate-500">No wallet connected</p>
+          </div>
+
+          <div className="relative">
+            <input
+              type={show ? 'text' : 'password'}
+              placeholder="Paste private key (base58)..."
+              value={input}
+              onChange={e => { setInput(e.target.value); setError('') }}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-violet-500 pr-16"
+            />
+            <button onClick={() => setShow(s => !s)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 px-2 py-1">
+              {show ? 'Hide' : 'Show'}
+            </button>
+          </div>
+
+          {error && <p className="text-xs text-red-400">{error}</p>}
+
+          <button onClick={connect} disabled={!input.trim() || loading}
+            className="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
+            {loading ? 'Connecting...' : 'Import Wallet'}
+          </button>
+
+          <p className="text-xs text-slate-600 text-center">
+            Private key dienkripsi AES-256 sebelum disimpan. Tidak pernah dikirim ke pihak ketiga.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SettingsTab() {
+  const [cfg, setCfg] = useState<BotConfig | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    fetch('/api/config').then(r => r.json()).then(setCfg)
+  }, [])
+
+  const save = async () => {
+    if (!cfg) return
+    setSaving(true)
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    setSaving(false)
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  if (!cfg) return <div className="text-center py-12 text-slate-600 text-sm">Loading config...</div>
+
+  const numField = (key: keyof BotConfig, label: string, hint: string, step = 0.01, min = 0) => (
+    <div key={key}>
+      <label className="text-xs text-slate-500 block mb-1">{label}</label>
+      <input
+        type="number" step={step} min={min}
+        value={cfg[key] as number}
+        onChange={e => setCfg(p => p ? { ...p, [key]: parseFloat(e.target.value) || 0 } : p)}
+        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+      />
+      <p className="text-xs text-slate-600 mt-0.5">{hint}</p>
+    </div>
+  )
+
+  const toggle = (key: keyof BotConfig, label: string, hint: string) => (
+    <div key={key} className="flex items-start justify-between gap-4">
+      <div>
+        <p className="text-sm text-slate-300">{label}</p>
+        <p className="text-xs text-slate-600">{hint}</p>
+      </div>
+      <button
+        onClick={() => setCfg(p => p ? { ...p, [key]: !p[key] } : p)}
+        className={`shrink-0 w-10 h-5 rounded-full transition-all relative ${cfg[key] ? 'bg-violet-600' : 'bg-slate-700'}`}
+      >
+        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${cfg[key] ? 'left-5' : 'left-0.5'}`} />
+      </button>
+    </div>
+  )
+
+  return (
+    <div className="space-y-4">
+
+      <WalletConnect />
+
+      {/* Trading */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">Trading</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {numField('BUY_AMOUNT_SOL',     'Buy Amount (SOL)',    'SOL per trade', 0.05, 0.01)}
+          {numField('STOP_LOSS_PERCENT',  'Stop Loss %',         'Max loss sebelum cut', 1, 1)}
+          {numField('TP1_PERCENT',        'TP1 %',              'Take profit level 1', 1, 1)}
+          {numField('TP1_SELL_PERCENT',   'TP1 Sell %',         '% posisi dijual di TP1', 1, 1)}
+          {numField('TP2_PERCENT',        'TP2 %',              'Take profit level 2 (close all)', 1, 1)}
+          {numField('PUMP_MAX_POSITIONS', 'Max Posisi',         'Max posisi bersamaan', 1, 1)}
+          {numField('PUMP_MAX_HOLD_MINUTES', 'Max Hold (menit)', 'Auto-sell setelah X menit (0=off)', 1, 0)}
+        </div>
+      </div>
+
+      {/* Fee & Slippage */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">Fee & Slippage</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {numField('MAX_SLIPPAGE_BPS',       'Slippage (BPS)',         '2000 = 20%. 100 BPS = 1%', 100, 100)}
+          {numField('PRIORITY_FEE_BUY_SOL',  'Priority Fee Buy (SOL)', 'Bribe ke validator saat BUY', 0.00001, 0)}
+          {numField('PRIORITY_FEE_SELL_SOL', 'Priority Fee Sell (SOL)','Bribe ke validator saat SELL', 0.00001, 0)}
+          {numField('MAX_FEE_SOL',            'Max Fee Cap (SOL)',       'Total fee tidak melebihi ini', 0.00001, 0)}
+        </div>
+      </div>
+
+      {/* PumpFun Filter */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">PumpFun Filter</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {numField('PUMP_MIN_DEV_BUY_SOL', 'Min Dev Buy (SOL)', 'Dev harus beli minimal X SOL', 0.1, 0)}
+          {numField('PUMP_MAX_DEV_BUY_SOL', 'Max Dev Buy (SOL)', 'Dev tidak boleh beli lebih dari X SOL', 0.5, 0)}
+          {numField('PUMP_MIN_MCAP_SOL',    'Min MCap (SOL)',     'MCap minimal saat launch', 1, 0)}
+          {numField('PUMP_MAX_MCAP_SOL',    'Max MCap (SOL)',     'MCap maksimal saat launch', 1, 0)}
+        </div>
+      </div>
+
+      {/* Toggles */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">Mode</h3>
+        <div className="space-y-4">
+          {toggle('AUTO_SELL',     'Auto Sell',     'Bot otomatis jual berdasarkan TP/SL')}
+          {toggle('ANTI_MEV',      'Anti-MEV',      'Gunakan Jito bundle untuk anti front-run')}
+          {toggle('PAPER_TRADING', 'Paper Trading', '⚠️ Matikan untuk go LIVE — uang nyata!')}
+        </div>
+        {!cfg.PAPER_TRADING && (
+          <div className="mt-3 px-3 py-2 bg-red-900/30 border border-red-800/50 rounded-lg text-xs text-red-400">
+            ⚠️ LIVE MODE — setiap trade menggunakan SOL asli dari wallet kamu
+          </div>
+        )}
+      </div>
+
+      {/* Save */}
+      <button
+        onClick={save}
+        disabled={saving}
+        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all ${
+          saved ? 'bg-emerald-600 text-white' : 'bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white'
+        }`}
+      >
+        {saved ? '✓ Saved!' : saving ? 'Saving...' : 'Save Config'}
+      </button>
+      <p className="text-xs text-slate-600 text-center">Perubahan langsung aktif + tersimpan ke .env (persist restart)</p>
+    </div>
+  )
+}
+
 // ─── Main App ─────────────────────────────────────────────────────
 
 export default function App() {
@@ -207,18 +418,60 @@ export default function App() {
   const [trades, setTrades]       = useState<Trade[]>([])
   const [paired, setPaired]       = useState<PairedTrade[]>([])
   const [pnlData, setPnlData]     = useState<PnlPoint[]>([])
-  const [tab, setTab]             = useState<'positions' | 'history' | 'backtest'>('positions')
+  const [stats, setStats]         = useState<Stats | null>(null)
+  const [period, setPeriod]       = useState<'1d' | '7d' | '30d' | 'all'>('all')
+  const [tab, setTab]             = useState<'positions' | 'history' | 'backtest' | 'settings'>('positions')
+
+  // History table state
+  const [histPage, setHistPage]   = useState(1)
+  const [histPageSize, setHistPageSize] = useState(20)
+  const [sortCol, setSortCol]     = useState<keyof PairedTrade>('sellTime')
+  const [sortDir, setSortDir]     = useState<'asc' | 'desc'>('desc')
+
+  const sortedPaired = [...paired].sort((a, b) => {
+    const av = a[sortCol] ?? 0
+    const bv = b[sortCol] ?? 0
+    if (av < bv) return sortDir === 'asc' ? -1 : 1
+    if (av > bv) return sortDir === 'asc' ? 1 : -1
+    return 0
+  })
+
+  function toggleSort(col: keyof PairedTrade) {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('desc') }
+    setHistPage(1)
+  }
+  function SortTh({ col, label, right }: { col: keyof PairedTrade, label: string, right?: boolean }) {
+    const active = sortCol === col
+    return (
+      <th
+        className={`px-4 py-3 cursor-pointer select-none hover:text-slate-300 transition-colors ${right ? 'text-right' : 'text-left'}`}
+        onClick={() => toggleSort(col)}
+      >
+        <span className="inline-flex items-center gap-1">
+          {!right && label}
+          {active ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ' ↕'}
+          {right && label}
+        </span>
+      </th>
+    )
+  }
 
   useEffect(() => {
     fetch('/api/trades?limit=100').then(r => r.json()).then(d => setTrades(d.trades ?? []))
     fetch('/api/trades/paired?limit=100').then(r => r.json()).then(setPaired)
-    fetch('/api/pnl').then(r => r.json()).then(setPnlData)
   }, [state.buysExecuted])
 
-  const totalPnlSol = pnlData.at(-1)?.cumulative ?? 0
-  const winTrades   = trades.filter(t => t.type === 'SELL' && (t.pnlSol ?? 0) > 0).length
-  const sellTrades  = trades.filter(t => t.type === 'SELL').length
-  const winRate     = sellTrades > 0 ? (winTrades / sellTrades) * 100 : 0
+  useEffect(() => {
+    fetch(`/api/pnl?period=${period}`).then(r => r.json()).then(setPnlData)
+    fetch(`/api/stats?period=${period}`).then(r => r.json()).then(setStats)
+  }, [period, state.buysExecuted])
+
+  const totalPnlSol = stats?.totalPnlSol ?? (pnlData.at(-1)?.cumulative ?? 0)
+  const totalPnlUsd = totalPnlSol * (state.solPriceUsd || 0)
+  const winRate     = stats?.winRate ?? 0
+  const winTrades   = stats?.wins ?? 0
+  const sellTrades  = stats?.total ?? 0
 
   const exportCSV = () => {
     const headers = ['Time', 'Type', 'Symbol', 'Name', 'SOL Amount', 'Token Amount', 'Price USD', 'Mcap USD', 'PnL %', 'PnL SOL', 'Reason', 'Source', 'DEX', 'TX Signature']
@@ -300,12 +553,14 @@ export default function App() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-        <StatCard icon={<Wallet size={14} />} label="SOL Balance" value={`${fmt(state.solBalance, 3)} SOL`} />
+        <StatCard icon={<Wallet size={14} />} label="SOL Balance" value={`${fmt(state.solBalance, 3)} SOL`}
+          sub={state.solPriceUsd > 0 ? `≈ $${fmt(state.solBalance * state.solPriceUsd, 0)}` : undefined} />
         <StatCard
           icon={<TrendingUp size={14} />}
           label="Total PnL"
           value={`${totalPnlSol >= 0 ? '+' : ''}${fmt(totalPnlSol, 3)} SOL`}
           valueClass={pnlColor(totalPnlSol)}
+          sub={state.solPriceUsd > 0 ? `≈ ${totalPnlUsd >= 0 ? '+' : ''}$${fmt(Math.abs(totalPnlUsd), 2)}` : undefined}
         />
         <StatCard icon={<Radio size={14} />} label="Tweets" value={state.tweetsDetected.toString()} />
         <StatCard icon={<ShoppingCart size={14} />} label="Win Rate" value={`${fmt(winRate, 0)}%`} sub={`${winTrades}/${sellTrades} sells`} />
@@ -320,7 +575,22 @@ export default function App() {
 
       {/* PnL Chart — always visible */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">Cumulative PnL (SOL)</h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-slate-300">Cumulative PnL (SOL)</h3>
+          <div className="flex gap-1 bg-slate-800 rounded-lg p-0.5">
+            {(['1d', '7d', '30d', 'all'] as const).map(p => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  period === p ? 'bg-violet-600 text-white' : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                {p === 'all' ? 'All' : p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
         {pnlData.length === 0 ? (
           <Empty text="No completed trades yet" />
         ) : (
@@ -347,15 +617,18 @@ export default function App() {
           ['positions', `Positions (${state.activePositions.length})`],
           ['history',   'History'],
           ['backtest',  'Backtest'],
-        ] as const).map(([t, label]) => (
+          ['settings',  'Settings'],
+        ] as [string, string][]).map(([t, label]) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
+            onClick={() => setTab(t as any)}
             className={`px-3 py-1.5 rounded-md text-xs font-medium capitalize transition-all ${
               tab === t ? 'bg-slate-700 text-white' : 'text-slate-500 hover:text-slate-300'
             }`}
           >
-            {t === 'backtest' ? <span className="flex items-center gap-1"><FlaskConical size={11} />{label}</span> : label}
+            {t === 'backtest' ? <span className="flex items-center gap-1"><FlaskConical size={11} />{label}</span>
+            : t === 'settings' ? <span className="flex items-center gap-1"><Settings size={11} />{label}</span>
+            : label}
           </button>
         ))}
       </div>
@@ -421,71 +694,145 @@ export default function App() {
       {/* Trade History */}
       {tab === 'history' && (
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-          {paired.length > 0 && (
-            <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-slate-800">
-              <span className="text-xs text-slate-500">{paired.length} completed trades</span>
-              <button
-                onClick={exportCSV}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-all"
-              >
-                <Download size={12} />
-                Export CSV
-              </button>
-            </div>
-          )}
+          {/* Toolbar */}
+          <div className="flex flex-wrap items-center gap-2 px-4 pt-3 pb-3 border-b border-slate-800">
+            <span className="text-xs text-slate-500 mr-auto">{paired.length} completed trades</span>
+
+            {/* Filter by result */}
+            <select
+              className="bg-slate-800 border border-slate-700 text-xs text-slate-300 rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
+              onChange={() => { setHistPage(1); setSortCol('sellTime'); setSortDir('desc'); }}
+              id="hist-filter"
+            >
+              <option value="all">All trades</option>
+              <option value="win">Wins only</option>
+              <option value="loss">Losses only</option>
+              <option value="rug">Rugs (&lt;-40%)</option>
+            </select>
+
+            {/* Rows per page */}
+            <select
+              className="bg-slate-800 border border-slate-700 text-xs text-slate-300 rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
+              value={histPageSize}
+              onChange={e => { setHistPageSize(parseInt(e.target.value)); setHistPage(1) }}
+            >
+              {[10, 20, 50, 100].map(n => <option key={n} value={n}>{n} / page</option>)}
+            </select>
+
+            <button
+              onClick={exportCSV}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium transition-all"
+            >
+              <Download size={12} /> Export CSV
+            </button>
+          </div>
+
           {paired.length === 0 ? (
             <div className="p-8"><Empty text="No completed trades yet" /></div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800 text-slate-500">
-                    <th className="text-left px-4 py-3">Token</th>
-                    <th className="text-right px-4 py-3">Buy MCap</th>
-                    <th className="text-right px-4 py-3">Sell MCap</th>
-                    <th className="text-right px-4 py-3">PnL %</th>
-                    <th className="text-right px-4 py-3">PnL SOL</th>
-                    <th className="text-left px-4 py-3">Reason</th>
-                    <th className="text-left px-4 py-3">Time</th>
-                    <th className="text-left px-4 py-3">TX</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {paired.map(t => (
-                    <tr key={t.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-white">${t.symbol}</div>
-                        <div className="text-slate-600 text-xs">{t.dex}</div>
-                      </td>
-                      <td className="px-4 py-3 text-right text-slate-400">
-                        {t.buyMcapUsd != null ? `$${fmtMcap(t.buyMcapUsd)}` : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-slate-300">
-                        ${fmtMcap(t.sellMcapUsd)}
-                      </td>
-                      <td className={`px-4 py-3 text-right font-medium ${t.pnlPercent != null ? pnlColor(t.pnlPercent) : 'text-slate-600'}`}>
-                        {t.pnlPercent != null ? `${t.pnlPercent >= 0 ? '+' : ''}${fmt(t.pnlPercent, 1)}%` : '—'}
-                      </td>
-                      <td className={`px-4 py-3 text-right font-medium ${t.pnlSol != null ? pnlColor(t.pnlSol) : 'text-slate-600'}`}>
-                        {t.pnlSol != null ? `${t.pnlSol >= 0 ? '+' : ''}${fmt(t.pnlSol, 4)}` : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-slate-500">{t.reason ?? '—'}</td>
-                      <td className="px-4 py-3 text-slate-500">{new Date(t.sellTime).toLocaleTimeString()}</td>
-                      <td className="px-4 py-3">
-                        <a href={`https://solscan.io/tx/${t.txSignature}`} target="_blank" rel="noreferrer" className="text-violet-400 hover:text-violet-300 underline">
-                          {t.txSignature.slice(0, 8)}...
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ) : (() => {
+            // Apply filter
+            const filterVal = (document.getElementById('hist-filter') as HTMLSelectElement)?.value ?? 'all'
+            const filtered = sortedPaired.filter(t => {
+              if (filterVal === 'win')  return (t.pnlSol ?? 0) > 0
+              if (filterVal === 'loss') return (t.pnlSol ?? 0) <= 0
+              if (filterVal === 'rug')  return (t.pnlPercent ?? 0) < -40
+              return true
+            })
+            const totalPages = Math.ceil(filtered.length / histPageSize)
+            const rows = filtered.slice((histPage - 1) * histPageSize, histPage * histPageSize)
+
+            return (
+              <>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-slate-500">
+                        <th className="text-right px-4 py-3">#</th>
+                        <SortTh col="symbol"      label="Token" />
+                        <SortTh col="buyMcapUsd"  label="Buy MCap"  right />
+                        <SortTh col="sellMcapUsd" label="Sell MCap" right />
+                        <SortTh col="pnlPercent"  label="PnL %"     right />
+                        <SortTh col="pnlSol"      label="PnL SOL"   right />
+                        <SortTh col="reason"      label="Reason" />
+                        <SortTh col="sellTime"    label="Time" />
+                        <th className="text-left px-4 py-3 text-slate-500">TX</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((t, i) => (
+                        <tr key={t.id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 text-right text-slate-600 tabular-nums">
+                            {(histPage - 1) * histPageSize + i + 1}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-white">${t.symbol}</div>
+                            <div className="text-slate-600">{t.dex}</div>
+                          </td>
+                          <td className="px-4 py-3 text-right text-slate-400">
+                            {t.buyMcapUsd != null ? `$${fmtMcap(t.buyMcapUsd)}` : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-right text-slate-300">
+                            ${fmtMcap(t.sellMcapUsd)}
+                          </td>
+                          <td className={`px-4 py-3 text-right font-medium ${t.pnlPercent != null ? pnlColor(t.pnlPercent) : 'text-slate-600'}`}>
+                            {t.pnlPercent != null ? `${t.pnlPercent >= 0 ? '+' : ''}${fmt(t.pnlPercent, 1)}%` : '—'}
+                          </td>
+                          <td className={`px-4 py-3 text-right font-medium ${t.pnlSol != null ? pnlColor(t.pnlSol) : 'text-slate-600'}`}>
+                            {t.pnlSol != null ? `${t.pnlSol >= 0 ? '+' : ''}${fmt(t.pnlSol, 4)}` : '—'}
+                          </td>
+                          <td className="px-4 py-3 text-slate-500">{t.reason ?? '—'}</td>
+                          <td className="px-4 py-3 text-slate-500">
+                            <div>{new Date(t.sellTime).toLocaleDateString()}</div>
+                            <div className="text-slate-600">{new Date(t.sellTime).toLocaleTimeString()}</div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <a href={`https://solscan.io/tx/${t.txSignature}`} target="_blank" rel="noreferrer"
+                              className="text-violet-400 hover:text-violet-300 underline">
+                              {t.txSignature.slice(0, 8)}...
+                            </a>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800">
+                    <span className="text-xs text-slate-500">
+                      {(histPage - 1) * histPageSize + 1}–{Math.min(histPage * histPageSize, filtered.length)} of {filtered.length}
+                    </span>
+                    <div className="flex gap-1">
+                      <button onClick={() => setHistPage(1)} disabled={histPage === 1}
+                        className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 transition-all">«</button>
+                      <button onClick={() => setHistPage(p => Math.max(1, p - 1))} disabled={histPage === 1}
+                        className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 transition-all">‹</button>
+                      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                        const start = Math.max(1, Math.min(histPage - 2, totalPages - 4))
+                        const p = start + i
+                        return (
+                          <button key={p} onClick={() => setHistPage(p)}
+                            className={`px-2.5 py-1 rounded text-xs transition-all ${p === histPage ? 'bg-violet-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}`}>
+                            {p}
+                          </button>
+                        )
+                      })}
+                      <button onClick={() => setHistPage(p => Math.min(totalPages, p + 1))} disabled={histPage === totalPages}
+                        className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 transition-all">›</button>
+                      <button onClick={() => setHistPage(totalPages)} disabled={histPage === totalPages}
+                        className="px-2 py-1 rounded text-xs bg-slate-800 text-slate-400 hover:text-white disabled:opacity-30 transition-all">»</button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )
+          })()}
         </div>
       )}
 
       {tab === 'backtest' && <BacktestTab />}
+      {tab === 'settings' && <SettingsTab />}
     </div>
   )
 }

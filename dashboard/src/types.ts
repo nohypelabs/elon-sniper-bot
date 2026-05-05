@@ -22,7 +22,38 @@ export interface BotState {
   tweetsDetected: number
   buysExecuted: number
   solBalance: number
+  solPriceUsd: number
   activePositions: ActivePositionInfo[]
+}
+
+export interface BotConfig {
+  BUY_AMOUNT_SOL: number
+  MAX_SLIPPAGE_BPS: number
+  STOP_LOSS_PERCENT: number
+  TP1_PERCENT: number
+  TP1_SELL_PERCENT: number
+  TP2_PERCENT: number
+  PRIORITY_FEE_BUY_SOL: number
+  PRIORITY_FEE_SELL_SOL: number
+  MAX_FEE_SOL: number
+  PUMP_MAX_POSITIONS: number
+  PUMP_MAX_HOLD_MINUTES: number
+  PUMP_MIN_DEV_BUY_SOL: number
+  PUMP_MAX_DEV_BUY_SOL: number
+  PUMP_MIN_MCAP_SOL: number
+  PUMP_MAX_MCAP_SOL: number
+  AUTO_SELL: boolean
+  ANTI_MEV: boolean
+  PAPER_TRADING: boolean
+}
+
+export interface Stats {
+  totalPnlSol: number
+  wins: number
+  losses: number
+  total: number
+  winRate: number
+  avgPnlPercent: number
 }
 
 export interface Trade {

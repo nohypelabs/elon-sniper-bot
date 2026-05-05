@@ -3,7 +3,7 @@ import type { BotState } from '../types'
 
 const DEFAULT_STATE: BotState = {
   mode: 'PAPER', running: false, paused: false, uptime: 0,
-  tweetsDetected: 0, buysExecuted: 0, solBalance: 0,
+  tweetsDetected: 0, buysExecuted: 0, solBalance: 0, solPriceUsd: 0,
   activePositions: [],
 }
 
