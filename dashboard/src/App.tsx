@@ -312,101 +312,85 @@ function SettingsTab() {
 
   if (!cfg) return <div className="text-center py-12 text-slate-600 text-sm">Loading config...</div>
 
-  const numField = (key: keyof BotConfig, label: string, hint: string, step = 0.01, min = 0) => (
-    <div key={key}>
-      <label className="text-xs text-slate-500 block mb-1">{label}</label>
+  const N = (key: keyof BotConfig, label: string, step = 0.01, min = 0) => (
+    <div key={key} className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
+      <label className="text-xs text-slate-400 shrink-0">{label}</label>
       <input
         type="number" step={step} min={min}
         value={cfg[key] as number}
         onChange={e => setCfg(p => p ? { ...p, [key]: parseFloat(e.target.value) || 0 } : p)}
-        className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-500"
+        className="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-white text-right focus:outline-none focus:border-violet-500"
       />
-      <p className="text-xs text-slate-600 mt-0.5">{hint}</p>
     </div>
   )
 
-  const toggle = (key: keyof BotConfig, label: string, hint: string) => (
-    <div key={key} className="flex items-start justify-between gap-4">
-      <div>
-        <p className="text-sm text-slate-300">{label}</p>
-        <p className="text-xs text-slate-600">{hint}</p>
-      </div>
+  const T = (key: keyof BotConfig, label: string) => (
+    <div key={key} className="flex items-center justify-between gap-2 py-1.5 border-b border-slate-800/60 last:border-0">
+      <label className="text-xs text-slate-400">{label}</label>
       <button
         onClick={() => setCfg(p => p ? { ...p, [key]: !p[key] } : p)}
-        className={`shrink-0 w-10 h-5 rounded-full transition-all relative ${cfg[key] ? 'bg-violet-600' : 'bg-slate-700'}`}
+        className={`shrink-0 w-8 h-4 rounded-full transition-all relative ${cfg[key] ? 'bg-violet-600' : 'bg-slate-700'}`}
       >
-        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${cfg[key] ? 'left-5' : 'left-0.5'}`} />
+        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${cfg[key] ? 'left-4' : 'left-0.5'}`} />
       </button>
     </div>
   )
 
   return (
-    <div className="space-y-4">
-
+    <div className="space-y-3">
       <WalletConnect />
 
-      {/* Trading */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">Trading</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {numField('BUY_AMOUNT_SOL',     'Buy Amount (SOL)',    'SOL per trade', 0.05, 0.01)}
-          {numField('STOP_LOSS_PERCENT',  'Stop Loss %',         'Max loss sebelum cut', 1, 1)}
-          {numField('TP1_PERCENT',        'TP1 %',              'Take profit level 1', 1, 1)}
-          {numField('TP1_SELL_PERCENT',   'TP1 Sell %',         '% posisi dijual di TP1', 1, 1)}
-          {numField('TP2_PERCENT',        'TP2 %',              'Take profit level 2 (close all)', 1, 1)}
-          {numField('PUMP_MAX_POSITIONS', 'Max Posisi',         'Max posisi bersamaan', 1, 1)}
-          {numField('PUMP_MAX_HOLD_MINUTES', 'Max Hold (menit)', 'Auto-sell setelah X menit (0=off)', 1, 0)}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+        {/* Trading */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trading</p>
+          {N('BUY_AMOUNT_SOL',      'Buy Amount (SOL)',   0.05, 0.01)}
+          {N('STOP_LOSS_PERCENT',   'Stop Loss %',        1,    1)}
+          {N('TP1_PERCENT',         'TP1 %',              1,    1)}
+          {N('TP1_SELL_PERCENT',    'TP1 Sell %',         1,    1)}
+          {N('TP2_PERCENT',         'TP2 %',              1,    1)}
+          {N('PUMP_MAX_POSITIONS',  'Max Posisi',         1,    1)}
+          {N('PUMP_MAX_HOLD_MINUTES','Max Hold (min)',    1,    0)}
+        </div>
+
+        {/* Fee & PumpFun */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Fee & Slippage</p>
+          {N('MAX_SLIPPAGE_BPS',       'Slippage (BPS)',      100,     100)}
+          {N('PRIORITY_FEE_BUY_SOL',  'Fee Buy (SOL)',        0.00001, 0)}
+          {N('PRIORITY_FEE_SELL_SOL', 'Fee Sell (SOL)',       0.00001, 0)}
+          {N('MAX_FEE_SOL',            'Max Fee Cap (SOL)',   0.00001, 0)}
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-3">PumpFun Filter</p>
+          {N('PUMP_MIN_DEV_BUY_SOL', 'Min Dev Buy (SOL)',  0.1, 0)}
+          {N('PUMP_MAX_DEV_BUY_SOL', 'Max Dev Buy (SOL)',  0.5, 0)}
+          {N('PUMP_MIN_MCAP_SOL',    'Min MCap (SOL)',      1,   0)}
+          {N('PUMP_MAX_MCAP_SOL',    'Max MCap (SOL)',      1,   0)}
+        </div>
+
+        {/* Mode */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Mode</p>
+          {T('AUTO_SELL',     'Auto Sell')}
+          {T('ANTI_MEV',      'Anti-MEV')}
+          {T('PAPER_TRADING', 'Paper Trading')}
+          {!cfg.PAPER_TRADING && (
+            <p className="mt-2 text-xs text-red-400 bg-red-900/20 border border-red-900/40 rounded px-2 py-1.5">
+              ⚠️ LIVE — uang nyata!
+            </p>
+          )}
         </div>
       </div>
 
-      {/* Fee & Slippage */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">Fee & Slippage</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {numField('MAX_SLIPPAGE_BPS',       'Slippage (BPS)',         '2000 = 20%. 100 BPS = 1%', 100, 100)}
-          {numField('PRIORITY_FEE_BUY_SOL',  'Priority Fee Buy (SOL)', 'Bribe ke validator saat BUY', 0.00001, 0)}
-          {numField('PRIORITY_FEE_SELL_SOL', 'Priority Fee Sell (SOL)','Bribe ke validator saat SELL', 0.00001, 0)}
-          {numField('MAX_FEE_SOL',            'Max Fee Cap (SOL)',       'Total fee tidak melebihi ini', 0.00001, 0)}
-        </div>
-      </div>
-
-      {/* PumpFun Filter */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">PumpFun Filter</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {numField('PUMP_MIN_DEV_BUY_SOL', 'Min Dev Buy (SOL)', 'Dev harus beli minimal X SOL', 0.1, 0)}
-          {numField('PUMP_MAX_DEV_BUY_SOL', 'Max Dev Buy (SOL)', 'Dev tidak boleh beli lebih dari X SOL', 0.5, 0)}
-          {numField('PUMP_MIN_MCAP_SOL',    'Min MCap (SOL)',     'MCap minimal saat launch', 1, 0)}
-          {numField('PUMP_MAX_MCAP_SOL',    'Max MCap (SOL)',     'MCap maksimal saat launch', 1, 0)}
-        </div>
-      </div>
-
-      {/* Toggles */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">Mode</h3>
-        <div className="space-y-4">
-          {toggle('AUTO_SELL',     'Auto Sell',     'Bot otomatis jual berdasarkan TP/SL')}
-          {toggle('ANTI_MEV',      'Anti-MEV',      'Gunakan Jito bundle untuk anti front-run')}
-          {toggle('PAPER_TRADING', 'Paper Trading', '⚠️ Matikan untuk go LIVE — uang nyata!')}
-        </div>
-        {!cfg.PAPER_TRADING && (
-          <div className="mt-3 px-3 py-2 bg-red-900/30 border border-red-800/50 rounded-lg text-xs text-red-400">
-            ⚠️ LIVE MODE — setiap trade menggunakan SOL asli dari wallet kamu
-          </div>
-        )}
-      </div>
-
-      {/* Save */}
       <button
-        onClick={save}
-        disabled={saving}
-        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all ${
+        onClick={save} disabled={saving}
+        className={`w-full py-2.5 rounded-xl text-sm font-semibold transition-all ${
           saved ? 'bg-emerald-600 text-white' : 'bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white'
         }`}
       >
         {saved ? '✓ Saved!' : saving ? 'Saving...' : 'Save Config'}
       </button>
-      <p className="text-xs text-slate-600 text-center">Perubahan langsung aktif + tersimpan ke .env (persist restart)</p>
+      <p className="text-xs text-slate-600 text-center">Langsung aktif + tersimpan ke .env</p>
     </div>
   )
 }
