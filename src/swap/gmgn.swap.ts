@@ -47,10 +47,10 @@ export class GmgnSwap {
   constructor(connection: Connection) {
     this.connection = connection;
 
-    if (CONFIG.WALLET_PRIVATE_KEY && !CONFIG.PAPER_TRADING) {
+    if (CONFIG.WALLET_PRIVATE_KEY) {
       try {
         this.wallet = Keypair.fromSecretKey(bs58.decode(CONFIG.WALLET_PRIVATE_KEY));
-        logger.info(`GMGN wallet loaded: ${this.wallet.publicKey.toBase58()}`);
+        logger.info(`GMGN wallet loaded: ${this.wallet.publicKey.toBase58()}${CONFIG.PAPER_TRADING ? ' (paper — balance only)' : ''}`);
       } catch {
         logger.error('Invalid wallet private key');
       }
