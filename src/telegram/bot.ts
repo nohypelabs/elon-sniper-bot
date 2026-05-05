@@ -15,6 +15,7 @@
  */
 
 import axios, { AxiosError } from 'axios';
+import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { FoundToken } from '../scanner/token.finder';
@@ -32,6 +33,62 @@ let onStatusCommand: StatusCallback | null = null;
 let onHistoryCommand: HistoryCallback | null = null;
 let pollingOffset = 0;
 let pollingActive = false;
+
+// ─── Cloudflare Tunnel ────────────────────────────────────────────
+
+let tunnelProcess: ChildProcess | null = null;
+
+async function startTunnel(): Promise<string> {
+  if (tunnelProcess) {
+    return '⚠️ Tunnel sudah berjalan. Kirim /tunnel stop dulu.';
+  }
+
+  return new Promise(resolve => {
+    tunnelProcess = spawn('cloudflared', ['tunnel', '--url', 'http://localhost:3001'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        resolve('❌ Tunnel timeout — cloudflared tidak respond dalam 20 detik.');
+      }
+    }, 20_000);
+
+    const onData = (data: Buffer) => {
+      const line = data.toString();
+      const match = line.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      if (match && !resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        resolve(`🌐 <b>Dashboard aktif!</b>\n\n🔗 <a href="${match[0]}">${match[0]}</a>\n\n⚠️ URL berubah kalau tunnel di-restart.`);
+      }
+    };
+
+    tunnelProcess.stdout?.on('data', onData);
+    tunnelProcess.stderr?.on('data', onData);
+
+    tunnelProcess.on('exit', () => {
+      tunnelProcess = null;
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        resolve('❌ Tunnel process keluar lebih awal.');
+      }
+      logger.info('Cloudflare tunnel stopped');
+    });
+
+    logger.info('Starting Cloudflare tunnel...');
+  });
+}
+
+function stopTunnel(): string {
+  if (!tunnelProcess) return '⚠️ Tidak ada tunnel yang berjalan.';
+  tunnelProcess.kill();
+  tunnelProcess = null;
+  return '🛑 Tunnel dihentikan.';
+}
 
 // ─── Send helpers ─────────────────────────────────────────────────
 
@@ -268,6 +325,11 @@ async function pollLoop(): Promise<void> {
           if (onSellCommand) await onSellCommand();
         } else if (text === '/history') {
           if (onHistoryCommand) await send(await onHistoryCommand());
+        } else if (text === '/tunnel') {
+          await send('⏳ Starting tunnel...');
+          await send(await startTunnel());
+        } else if (text === '/tunnel stop') {
+          await send(stopTunnel());
         } else if (text === '/config') {
           await send([
             `⚙️ <b>Sniper Config</b>`,
@@ -288,6 +350,8 @@ async function pollLoop(): Promise<void> {
             `/sniper - Status & active positions`,
             `/history - Last 10 completed trades`,
             `/sell - Sell all positions`,
+            `/tunnel - Start dashboard tunnel (dapat URL)`,
+            `/tunnel stop - Stop tunnel`,
             `/config - Show configuration`,
             `/help - This message`,
           ].join('\n'));
