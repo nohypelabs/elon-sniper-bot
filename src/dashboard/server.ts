@@ -89,6 +89,38 @@ export async function startDashboardServer() {
     return c.json({ trades, total, page, pages: Math.ceil(total / limit) });
   });
 
+  app.get('/api/trades/paired', async c => {
+    const limit = parseInt(c.req.query('limit') || '50');
+    const sells = await db.trade.findMany({
+      where: { type: 'SELL' },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+    const paired = await Promise.all(sells.map(async sell => {
+      const buy = await db.trade.findFirst({
+        where: { type: 'BUY', tokenMint: sell.tokenMint, createdAt: { lte: sell.createdAt } },
+        orderBy: { createdAt: 'desc' },
+      });
+      return {
+        id:          sell.id,
+        symbol:      sell.symbol,
+        name:        sell.name,
+        dex:         sell.dex,
+        reason:      sell.reason,
+        pnlPercent:  sell.pnlPercent,
+        pnlSol:      sell.pnlSol,
+        solAmount:   sell.solAmount,
+        buyMcapUsd:  buy?.mcapUsd ?? null,
+        sellMcapUsd: sell.mcapUsd,
+        buyTime:     buy?.createdAt ?? null,
+        sellTime:    sell.createdAt,
+        txSignature: sell.txSignature,
+        source:      sell.source,
+      };
+    }));
+    return c.json(paired);
+  });
+
   app.get('/api/pnl', async c => {
     const sells = await db.trade.findMany({
       where: { type: 'SELL', pnlSol: { not: null } },

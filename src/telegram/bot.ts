@@ -25,9 +25,11 @@ const ENABLED = !!(CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_ID);
 // Callbacks for commands
 type SellCallback = () => Promise<void>;
 type StatusCallback = () => string;
+type HistoryCallback = () => Promise<string>;
 
 let onSellCommand: SellCallback | null = null;
 let onStatusCommand: StatusCallback | null = null;
+let onHistoryCommand: HistoryCallback | null = null;
 let pollingOffset = 0;
 let pollingActive = false;
 
@@ -169,16 +171,30 @@ export async function alertSellExecuted(
   symbol: string,
   pnlPercent: number,
   reason: string,
+  pnlSol?: number,
+  solPriceUsd?: number,
 ): Promise<void> {
   const emoji = pnlPercent >= 0 ? '🟢' : '🔴';
-  const msg = [
+  const sign  = pnlPercent >= 0 ? '+' : '';
+
+  const lines = [
     `${emoji} <b>SOLD ${symbol}</b>`,
     '',
-    `📈 PnL: ${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(1)}%`,
-    `📋 Reason: ${reason}`,
-  ].join('\n');
+    `📈 PnL: ${sign}${pnlPercent.toFixed(1)}%`,
+  ];
 
-  await send(msg);
+  if (pnlSol !== undefined && pnlSol !== 0) {
+    const solSign = pnlSol >= 0 ? '+' : '';
+    lines.push(`💰 SOL: ${solSign}${pnlSol.toFixed(4)} SOL`);
+    if (solPriceUsd && solPriceUsd > 0) {
+      const usd = pnlSol * solPriceUsd;
+      const usdSign = usd >= 0 ? '+' : '';
+      lines.push(`💵 USD: ${usdSign}$${Math.abs(usd).toFixed(2)}`);
+    }
+  }
+
+  lines.push(`📋 Reason: ${reason}`);
+  await send(lines.join('\n'));
 }
 
 export async function alertError(message: string): Promise<void> {
@@ -198,11 +214,13 @@ export function registerHandlers(handlers: {
   onSell: SellCallback;
   onBuySelected: BuyCallback;
   onSellSelected: SellByMintCallback;
+  getHistory: HistoryCallback;
 }): void {
-  onStatusCommand = handlers.getStatus;
-  onSellCommand = handlers.onSell;
-  onBuySelected = handlers.onBuySelected;
-  onSellSelected = handlers.onSellSelected;
+  onStatusCommand  = handlers.getStatus;
+  onSellCommand    = handlers.onSell;
+  onBuySelected    = handlers.onBuySelected;
+  onSellSelected   = handlers.onSellSelected;
+  onHistoryCommand = handlers.getHistory;
 }
 
 export function startPolling(): void {
@@ -246,6 +264,8 @@ async function pollLoop(): Promise<void> {
           if (onStatusCommand) await send(onStatusCommand());
         } else if (text === '/sell') {
           if (onSellCommand) await onSellCommand();
+        } else if (text === '/history') {
+          if (onHistoryCommand) await send(await onHistoryCommand());
         } else if (text === '/config') {
           await send([
             `⚙️ <b>Sniper Config</b>`,
@@ -264,7 +284,8 @@ async function pollLoop(): Promise<void> {
             `🤖 <b>Elon Sniper Bot</b>`,
             '',
             `/sniper - Status & active positions`,
-            `/sell - Sell current position`,
+            `/history - Last 10 completed trades`,
+            `/sell - Sell all positions`,
             `/config - Show configuration`,
             `/help - This message`,
           ].join('\n'));

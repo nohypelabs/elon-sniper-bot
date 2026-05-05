@@ -15,6 +15,10 @@ export const CONFIG = {
   STOP_LOSS_PERCENT: parseFloat(process.env.STOP_LOSS_PERCENT || '50'),
   MAX_SLIPPAGE_BPS: parseInt(process.env.MAX_SLIPPAGE_BPS || '1500'),
   AUTO_SELL: process.env.AUTO_SELL !== 'false',
+  PRIORITY_FEE_BUY_SOL:  parseFloat(process.env.PRIORITY_FEE_BUY_SOL  || '0.0000712'),
+  PRIORITY_FEE_SELL_SOL: parseFloat(process.env.PRIORITY_FEE_SELL_SOL || '0.0000712'),
+  MAX_FEE_SOL:           parseFloat(process.env.MAX_FEE_SOL            || '0.00009'),
+  ANTI_MEV:              process.env.ANTI_MEV !== 'false',
 
   // Paper
   PAPER_TRADING: process.env.PAPER_TRADING !== 'false',
@@ -23,10 +27,34 @@ export const CONFIG = {
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
 
+  // GMGN
+  GMGN_API_KEY: process.env.GMGN_API_KEY || '',
+
   // Twitter
   ELON_USER_ID: process.env.ELON_USER_ID || '44196397',
   TWEET_POLL_INTERVAL_MS: parseInt(process.env.TWEET_POLL_INTERVAL_MS || '5000'),
   NITTER_INSTANCES: (process.env.NITTER_INSTANCES || 'https://nitter.net').split(',').map(s => s.trim()),
+
+  // PumpFun Sniper mode
+  PUMP_SNIPE_ENABLED:    process.env.PUMP_SNIPE_ENABLED === 'true',
+  PUMP_MIN_DEV_BUY_SOL: parseFloat(process.env.PUMP_MIN_DEV_BUY_SOL || '0.5'),
+  PUMP_MAX_DEV_BUY_SOL: parseFloat(process.env.PUMP_MAX_DEV_BUY_SOL || '10'),
+  PUMP_MIN_MCAP_SOL:    parseFloat(process.env.PUMP_MIN_MCAP_SOL || '0'),
+  PUMP_MAX_MCAP_SOL:    parseFloat(process.env.PUMP_MAX_MCAP_SOL || '50'),
+  PUMP_MIN_VOLUME_SOL:  parseFloat(process.env.PUMP_MIN_VOLUME_SOL || '0'), // real SOL in curve = mcap - 30
+  PUMP_MAX_POSITIONS:   parseInt(process.env.PUMP_MAX_POSITIONS || '3'),
+  PUMP_SECURITY_CHECK:  process.env.PUMP_SECURITY_CHECK !== 'false',
+  PUMP_FAST_MODE:       process.env.PUMP_FAST_MODE === 'true', // buy first, check after
+  PUMP_CREATOR_COOLDOWN_MS: parseInt(process.env.PUMP_CREATOR_COOLDOWN_MS || '300000'), // 5 min
+  PUMP_BLACKLIST_WORDS: (process.env.PUMP_BLACKLIST_WORDS || 'test,rug,scam,honeypot,fake,copy,dupe').split(',').map(s => s.trim().toLowerCase()),
+  PUMP_WHITELIST_WORDS: (process.env.PUMP_WHITELIST_WORDS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+  PUMP_MAX_HOLD_MINUTES: parseInt(process.env.PUMP_MAX_HOLD_MINUTES || '30'),
+  PUMP_SOL_PRICE_USD: parseFloat(process.env.PUMP_SOL_PRICE_USD || '150'),
+
+  // Multi-level take profit
+  TP1_PERCENT:      parseFloat(process.env.TP1_PERCENT || '30'),   // first TP
+  TP1_SELL_PERCENT: parseFloat(process.env.TP1_SELL_PERCENT || '50'), // sell 50% at TP1
+  TP2_PERCENT:      parseFloat(process.env.TP2_PERCENT || '80'),   // second TP — sell all
 };
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';

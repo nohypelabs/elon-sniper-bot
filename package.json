@@ -4,21 +4,32 @@
   "description": "Elon Tweet Sniper - Monitor tweets, find memecoins, swap fast",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "dev": "tsx src/index.ts",
+    "build": "tsc && pnpm --filter ./dashboard build",
+    "start": "node dist/index.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "dashboard:dev": "pnpm --filter ./dashboard dev"
   },
   "dependencies": {
-    "@solana/web3.js": "^1.95.0",
+    "@hono/node-server": "^2.0.1",
+    "@prisma/client": "^6.19.3",
     "@solana/spl-token": "^0.4.0",
+    "@solana/web3.js": "^1.95.0",
     "axios": "^1.6.0",
     "bs58": "^5.0.0",
     "dotenv": "^16.3.1",
-    "node-telegram-bot-api": "^0.64.0"
+    "hono": "^4.12.16",
+    "node-telegram-bot-api": "^0.64.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
+    "@types/ws": "^8.18.1",
+    "prisma": "^6.19.3",
     "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.0"
   }
 }

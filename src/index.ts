@@ -85,6 +85,7 @@ class ElonSniper {
       onSell:          () => this.sellAllPositions(),
       onBuySelected:   (mint, symbol) => this.executeBuyFromTelegram(mint, symbol),
       onSellSelected:  (mint, symbol) => this.executeSellFromTelegram(mint, symbol),
+      getHistory:      () => this.getHistoryMessage(),
     });
     telegram.startPolling();
 
@@ -424,7 +425,7 @@ class ElonSniper {
       logEvent('SELL', `Partial ${sellPercent}% ${position.token.symbol} | PnL: ${pnlPercent.toFixed(1)}%`, { mint, reason, pnlPercent, pnlSol }),
     ]);
 
-    await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason);
+    await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason, pnlSol, this.solPriceUsd);
     broadcastState();
   }
 
@@ -468,7 +469,7 @@ class ElonSniper {
       }),
     ]);
 
-    await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason);
+    await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason, pnlSol, this.solPriceUsd);
     broadcastState();
   }
 
@@ -690,6 +691,42 @@ class ElonSniper {
     return lines.join('\n');
   }
 
+  private async getHistoryMessage(): Promise<string> {
+    const sells = await db.trade.findMany({
+      where: { type: 'SELL' },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+
+    if (sells.length === 0) return '📋 No completed trades yet.';
+
+    const lines = [`📋 <b>Last ${sells.length} Trades</b>`, ''];
+
+    for (const sell of sells) {
+      const buy = await db.trade.findFirst({
+        where: { type: 'BUY', tokenMint: sell.tokenMint, createdAt: { lte: sell.createdAt } },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      const pnl     = sell.pnlPercent ?? 0;
+      const pnlSol  = sell.pnlSol ?? 0;
+      const emoji   = pnl >= 0 ? '🟢' : '🔴';
+      const sign    = pnl >= 0 ? '+' : '';
+      const buyMcap = buy ? `$${fmtK(buy.mcapUsd)}` : '?';
+      const sellMcap = `$${fmtK(sell.mcapUsd)}`;
+      const solSign = pnlSol >= 0 ? '+' : '';
+
+      lines.push(
+        `${emoji} <b>${sell.symbol}</b> ${sign}${pnl.toFixed(1)}% | ${solSign}${pnlSol.toFixed(4)} SOL`,
+        `   📊 MCap: ${buyMcap} → ${sellMcap}`,
+        `   📋 ${sell.reason ?? '—'} | ${new Date(sell.createdAt).toLocaleTimeString()}`,
+        '',
+      );
+    }
+
+    return lines.join('\n');
+  }
+
   private async fetchTokenInfo(mintAddress: string, symbol: string): Promise<FoundToken> {
     const token: FoundToken = {
       mintAddress, symbol, name: symbol,
@@ -715,6 +752,12 @@ class ElonSniper {
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
+}
+
+function fmtK(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return n.toFixed(0);
 }
 
 // ─── Entry point ──────────────────────────────────────────────────

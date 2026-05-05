@@ -1,0 +1,56 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Trade {
+  id          String   @id @default(cuid())
+  type        String   // BUY | SELL
+  tokenMint   String
+  symbol      String
+  name        String   @default("")
+  solAmount   Float
+  tokenAmount Float    @default(0)
+  priceUsd    Float    @default(0)
+  mcapUsd     Float    @default(0)
+  pnlPercent  Float?
+  pnlSol      Float?
+  txSignature String
+  source      String   @default("gmgn") // gmgn | jupiter | paper
+  reason      String?  // TP | SL | manual | tweet
+  tweetText   String?
+  dex         String   @default("pump.fun")
+  createdAt   DateTime @default(now())
+
+  @@index([tokenMint])
+  @@index([createdAt])
+}
+
+model Position {
+  id          String   @id @default(cuid())
+  tokenMint   String   @unique
+  symbol      String
+  name        String   @default("")
+  entryPrice  Float
+  solSpent    Float
+  tokenAmount Float
+  txSignature String
+  tweetText   String?
+  dex         String   @default("pump.fun")
+  openedAt    DateTime @default(now())
+}
+
+model BotEvent {
+  id        String   @id @default(cuid())
+  type      String   // TWEET | TOKEN_FOUND | BUY | SELL | ERROR | START | STOP
+  message   String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([type])
+}
