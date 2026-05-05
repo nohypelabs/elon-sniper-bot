@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Activity, TrendingUp, Zap, ShoppingCart, Wallet, Clock, Radio, Pause, Play, FlaskConical, Download, Settings } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Activity, TrendingUp, Zap, ShoppingCart, Wallet, Clock, Radio, Pause, Play, FlaskConical, Download, Settings, ChevronDown } from 'lucide-react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell,
@@ -200,19 +200,30 @@ function BacktestTab() {
   )
 }
 
-// ─── Settings Tab ─────────────────────────────────────────────────
+// ─── Header: Wallet Dropdown ──────────────────────────────────────
 
-function WalletConnect() {
-  const [wallet, setWallet]     = useState<{ connected: boolean; address: string | null; hasStoredKey: boolean } | null>(null)
-  const [input, setInput]       = useState('')
-  const [show, setShow]         = useState(false)
-  const [loading, setLoading]   = useState(false)
-  const [error, setError]       = useState('')
+function WalletDropdown() {
+  const [wallet, setWallet] = useState<{ connected: boolean; address: string | null } | null>(null)
+  const [open, setOpen]     = useState(false)
+  const [input, setInput]   = useState('')
+  const [showKey, setShowKey] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError]   = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const fn = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', fn)
+    return () => document.removeEventListener('mousedown', fn)
+  }, [])
 
   const load = () => fetch('/api/wallet').then(r => r.json()).then(setWallet)
   useEffect(() => { load() }, [])
 
   const connect = async () => {
+    if (!input.trim()) return
     setError(''); setLoading(true)
     const r = await fetch('/api/wallet/connect', {
       method: 'POST',
@@ -221,72 +232,152 @@ function WalletConnect() {
     })
     const d = await r.json()
     setLoading(false)
-    if (d.ok) { setInput(''); setShow(false); load() }
-    else setError(d.error || 'Gagal connect wallet')
+    if (d.ok) { setInput(''); setOpen(false); load() }
+    else setError(d.error || 'Private key tidak valid')
   }
 
   const disconnect = async () => {
     if (!confirm('Disconnect wallet? Private key akan dihapus dari server.')) return
     await fetch('/api/wallet/disconnect', { method: 'POST' })
-    load()
+    setOpen(false); load()
   }
 
-  if (!wallet) return null
+  const shortAddr = wallet?.address
+    ? wallet.address.slice(0, 4) + '…' + wallet.address.slice(-4)
+    : null
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-      <h3 className="text-sm font-semibold text-slate-300 mb-4">Wallet</h3>
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
+          wallet?.connected
+            ? 'bg-emerald-900/30 text-emerald-400 border-emerald-800 hover:bg-emerald-900/50'
+            : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200 hover:border-slate-600'
+        }`}
+      >
+        <Wallet size={12} />
+        <span className="hidden sm:inline">{wallet?.connected ? shortAddr : 'Connect Wallet'}</span>
+        <ChevronDown size={10} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
 
-      {wallet.connected ? (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-3 py-2.5 bg-emerald-900/20 border border-emerald-800/40 rounded-lg">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-emerald-400 font-medium">Connected</p>
-              <p className="text-xs text-slate-400 font-mono truncate">{wallet.address}</p>
+      {open && (
+        <div className="absolute right-0 top-10 z-50 w-72 bg-slate-900 border border-slate-700 rounded-xl p-3 shadow-2xl">
+          {wallet?.connected ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 p-2 bg-emerald-900/20 border border-emerald-800/40 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <p className="text-xs text-slate-400 font-mono truncate flex-1">{wallet.address}</p>
+                <button
+                  onClick={() => navigator.clipboard.writeText(wallet.address!)}
+                  className="text-xs text-slate-600 hover:text-violet-400 transition-colors shrink-0 px-1">
+                  copy
+                </button>
+              </div>
+              <button onClick={disconnect}
+                className="w-full py-1.5 rounded-lg bg-red-900/30 text-red-400 border border-red-900/50 text-xs font-medium hover:bg-red-900/50 transition-all">
+                Disconnect
+              </button>
             </div>
-          </div>
-          <button onClick={disconnect}
-            className="w-full py-2 rounded-lg bg-red-900/30 text-red-400 border border-red-900/50 text-xs font-medium hover:bg-red-900/50 transition-all">
-            Disconnect Wallet
-          </button>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/50 border border-slate-700 rounded-lg">
-            <span className="w-2 h-2 rounded-full bg-slate-600 shrink-0" />
-            <p className="text-xs text-slate-500">No wallet connected</p>
-          </div>
-
-          <div className="relative">
-            <input
-              type={show ? 'text' : 'password'}
-              placeholder="Paste private key (base58)..."
-              value={input}
-              onChange={e => { setInput(e.target.value); setError('') }}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-violet-500 pr-16"
-            />
-            <button onClick={() => setShow(s => !s)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 px-2 py-1">
-              {show ? 'Hide' : 'Show'}
-            </button>
-          </div>
-
-          {error && <p className="text-xs text-red-400">{error}</p>}
-
-          <button onClick={connect} disabled={!input.trim() || loading}
-            className="w-full py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
-            {loading ? 'Connecting...' : 'Import Wallet'}
-          </button>
-
-          <p className="text-xs text-slate-600 text-center">
-            Private key dienkripsi AES-256 sebelum disimpan. Tidak pernah dikirim ke pihak ketiga.
-          </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500 mb-1">Import private key (base58)</p>
+              <div className="relative">
+                <input
+                  type={showKey ? 'text' : 'password'}
+                  placeholder="Paste private key..."
+                  value={input}
+                  onChange={e => { setInput(e.target.value); setError('') }}
+                  onKeyDown={e => e.key === 'Enter' && connect()}
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-violet-500 pr-12"
+                  autoFocus
+                />
+                <button onClick={() => setShowKey(s => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-500 hover:text-slate-300 px-1">
+                  {showKey ? 'hide' : 'show'}
+                </button>
+              </div>
+              {error && <p className="text-xs text-red-400">{error}</p>}
+              <button onClick={connect} disabled={!input.trim() || loading}
+                className="w-full py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white text-xs font-semibold transition-all">
+                {loading ? 'Connecting...' : 'Import Wallet'}
+              </button>
+              <p className="text-xs text-slate-600 text-center">AES-256 encrypted · tidak dikirim ke pihak ketiga</p>
+            </div>
+          )}
         </div>
       )}
     </div>
   )
 }
+
+// ─── Header: Mode Toggle ──────────────────────────────────────────
+
+function ModeToggle({ mode }: { mode: 'PAPER' | 'LIVE' }) {
+  const [confirming, setConfirming] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!confirming) return
+    const fn = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setConfirming(false)
+    }
+    document.addEventListener('mousedown', fn)
+    return () => document.removeEventListener('mousedown', fn)
+  }, [confirming])
+
+  const toggle = async () => {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ PAPER_TRADING: mode === 'LIVE' }),
+    })
+    setConfirming(false)
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setConfirming(c => !c)}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all ${
+          mode === 'LIVE'
+            ? 'bg-emerald-900/50 text-emerald-400 border-emerald-800 hover:border-emerald-600'
+            : 'bg-amber-900/50 text-amber-400 border-amber-800 hover:border-amber-600'
+        }`}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${mode === 'LIVE' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+        {mode}
+      </button>
+
+      {confirming && (
+        <div className="absolute right-0 top-8 z-50 w-56 bg-slate-900 border border-slate-700 rounded-xl p-3 shadow-2xl">
+          <p className="text-xs text-slate-300 mb-3">
+            {mode === 'PAPER'
+              ? '⚠️ Switch ke LIVE? Uang nyata akan digunakan.'
+              : 'Switch ke PAPER trading?'
+            }
+          </p>
+          <div className="flex gap-2">
+            <button onClick={() => setConfirming(false)}
+              className="flex-1 py-1.5 rounded-lg text-xs bg-slate-800 text-slate-400 hover:text-white transition-all">
+              Batal
+            </button>
+            <button onClick={toggle}
+              className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                mode === 'PAPER'
+                  ? 'bg-emerald-700 hover:bg-emerald-600 text-white'
+                  : 'bg-amber-700 hover:bg-amber-600 text-white'
+              }`}>
+              Konfirmasi
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Settings Tab ─────────────────────────────────────────────────
 
 function SettingsTab() {
   const [cfg, setCfg] = useState<BotConfig | null>(null)
@@ -338,47 +429,42 @@ function SettingsTab() {
 
   return (
     <div className="space-y-3">
-      <WalletConnect />
-
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
 
         {/* Trading */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Trading</p>
-          {N('BUY_AMOUNT_SOL',      'Buy Amount (SOL)',   0.05, 0.01)}
-          {N('STOP_LOSS_PERCENT',   'Stop Loss %',        1,    1)}
-          {N('TP1_PERCENT',         'TP1 %',              1,    1)}
-          {N('TP1_SELL_PERCENT',    'TP1 Sell %',         1,    1)}
-          {N('TP2_PERCENT',         'TP2 %',              1,    1)}
-          {N('PUMP_MAX_POSITIONS',  'Max Posisi',         1,    1)}
+          {N('BUY_AMOUNT_SOL',       'Buy Amount (SOL)',  0.05, 0.01)}
+          {N('STOP_LOSS_PERCENT',    'Stop Loss %',       1,    1)}
+          {N('TP1_PERCENT',          'TP1 %',             1,    1)}
+          {N('TP1_SELL_PERCENT',     'TP1 Sell %',        1,    1)}
+          {N('TP2_PERCENT',          'TP2 %',             1,    1)}
+          {N('PUMP_MAX_POSITIONS',   'Max Posisi',        1,    1)}
           {N('PUMP_MAX_HOLD_MINUTES','Max Hold (min)',    1,    0)}
         </div>
 
         {/* Fee & PumpFun */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Fee & Slippage</p>
-          {N('MAX_SLIPPAGE_BPS',       'Slippage (BPS)',      100,     100)}
-          {N('PRIORITY_FEE_BUY_SOL',  'Fee Buy (SOL)',        0.00001, 0)}
-          {N('PRIORITY_FEE_SELL_SOL', 'Fee Sell (SOL)',       0.00001, 0)}
-          {N('MAX_FEE_SOL',            'Max Fee Cap (SOL)',   0.00001, 0)}
+          {N('MAX_SLIPPAGE_BPS',       'Slippage (BPS)',    100,     100)}
+          {N('PRIORITY_FEE_BUY_SOL',  'Fee Buy (SOL)',      0.00001, 0)}
+          {N('PRIORITY_FEE_SELL_SOL', 'Fee Sell (SOL)',     0.00001, 0)}
+          {N('MAX_FEE_SOL',            'Max Fee Cap (SOL)', 0.00001, 0)}
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 mt-3">PumpFun Filter</p>
-          {N('PUMP_MIN_DEV_BUY_SOL', 'Min Dev Buy (SOL)',  0.1, 0)}
-          {N('PUMP_MAX_DEV_BUY_SOL', 'Max Dev Buy (SOL)',  0.5, 0)}
-          {N('PUMP_MIN_MCAP_SOL',    'Min MCap (SOL)',      1,   0)}
-          {N('PUMP_MAX_MCAP_SOL',    'Max MCap (SOL)',      1,   0)}
+          {N('PUMP_MIN_DEV_BUY_SOL', 'Min Dev Buy (SOL)', 0.1, 0)}
+          {N('PUMP_MAX_DEV_BUY_SOL', 'Max Dev Buy (SOL)', 0.5, 0)}
+          {N('PUMP_MIN_MCAP_SOL',    'Min MCap (SOL)',     1,   0)}
+          {N('PUMP_MAX_MCAP_SOL',    'Max MCap (SOL)',     1,   0)}
         </div>
 
-        {/* Mode */}
+        {/* Switches */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Mode</p>
-          {T('AUTO_SELL',     'Auto Sell')}
-          {T('ANTI_MEV',      'Anti-MEV')}
-          {T('PAPER_TRADING', 'Paper Trading')}
-          {!cfg.PAPER_TRADING && (
-            <p className="mt-2 text-xs text-red-400 bg-red-900/20 border border-red-900/40 rounded px-2 py-1.5">
-              ⚠️ LIVE — uang nyata!
-            </p>
-          )}
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Switches</p>
+          {T('AUTO_SELL', 'Auto Sell')}
+          {T('ANTI_MEV',  'Anti-MEV')}
+          <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+            Mode Paper/Live dan Wallet diatur dari header atas.
+          </p>
         </div>
       </div>
 
@@ -500,13 +586,11 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-            state.mode === 'LIVE'
-              ? 'bg-emerald-900/50 text-emerald-400 border border-emerald-800'
-              : 'bg-amber-900/50 text-amber-400 border border-amber-800'
-          }`}>
-            {state.mode}
-          </span>
+          {/* PAPER / LIVE toggle */}
+          <ModeToggle mode={state.mode} />
+
+          {/* Wallet dropdown */}
+          <WalletDropdown />
 
           {/* Pause / Resume */}
           <button
