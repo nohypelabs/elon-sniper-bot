@@ -1,161 +1,221 @@
-# Elon Sniper Bot — Progress & Roadmap
+# Elon Sniper Bot — Progress Log
 
-## Overview
-Bot yang monitor tweet @elonmusk, extract kata-kata unik/meme, cari token di pump.fun/DexScreener, dan snipe swap SOL→Token secepat mungkin. Target masuk di bawah $5K mcap.
-
-## Current Status: MVP COMPLETE (Paper Trading)
-Tanggal: 2026-04-04
+Last updated: 2026-05-05
 
 ---
 
-## ✅ Completed
-
-### 1. Project Setup
-- TypeScript + Node.js project di `/DataPopOS/projects/elon-sniper-bot`
-- Dependencies: @solana/web3.js, axios, bs58, dotenv, node-telegram-bot-api
-- Systemd service file ready (`elon-sniper.service`)
-- Paper trading mode ON by default
-
-### 2. Tweet Monitor (`src/monitor/tweet.monitor.ts`)
-- Polling @elonmusk tweets setiap 5 detik
-- Source 1: Nitter RSS (rotating instances)
-- Source 2: Twitter syndication embed endpoint (fallback, no auth)
-- Auto-skip retweets, hanya original tweets
-- Deduplicate seen tweets, cap memory at 1000 entries
-- Skip old tweets saat first load (cuma proses yang baru)
-
-### 3. Keyword Extractor (`src/monitor/keyword.extractor.ts`)
-- Extract ALL CAPS words (high meme potential, score 10)
-- Extract hashtags (score 8)
-- Extract quoted phrases "like this" (score 9)
-- Emoji → token name mapping (🚀→rocket, 🐸→pepe, 🐕→doge, dll)
-- Filter common English stop words (500+ words)
-- Detect meme-adjacent words (inu, pepe, chad, based, grok, dll)
-- Generate compound keywords dari adjacent words
-- Return top 15 keywords sorted by meme-score
-
-### 4. Token Finder (`src/scanner/token.finder.ts`)
-- Search pump.fun API (new launches, sorted by creation time)
-- Search pump.fun search endpoint
-- Search DexScreener (broader coverage)
-- Parallel search across all sources
-- Deduplicate by mint address
-- Filter: mcap > 0 && mcap <= $5K (configurable)
-- Sort by lowest mcap first (earliest entry opportunity)
-
-### 5. Jupiter Swap (`src/swap/jupiter.swap.ts`)
-- Buy: SOL → Token via Jupiter V6 Aggregator
-- Sell: Token → SOL
-- Auto slippage (default 15%)
-- skipPreflight untuk max speed
-- Priority fee: auto
-- Paper trading mode (simulated buys/sells)
-- Get token balance, SOL balance helpers
-
-### 6. Telegram Bot (`src/telegram/bot.ts`)
-- Commands: /sniper, /sell, /config, /help
-- Alert: tweet detected, tokens found, buy/sell executed
-- Inline keyboard buttons: one-tap BUY per token, SELL button
-- Callback query handler untuk button presses
-- Show token details: mcap, liquidity, volume, age, chart link
-
-### 7. Orchestrator (`src/index.ts`)
-- Wire: tweet monitor → keyword extractor → token finder → telegram alert → swap
-- Active position tracking (Map by mint address)
-- Position monitor loop (15s interval): auto TP/SL
-- Retry token search at 30s and 60s after tweet (token might not exist yet)
-- Graceful shutdown (SIGINT/SIGTERM)
+## Status: PAPER TRADING — Backtest ready, go-live checklist below
 
 ---
-
-## ⏳ TODO / Next Session
-
-### High Priority
-- [ ] **Test & start service** — `sudo systemctl start elon-sniper`
-- [ ] **Test Telegram commands** — `/sniper`, `/config`, `/help`
-- [ ] **Verify Nitter RSS** — Check if current instances are alive, update if needed
-- [ ] **Add Helius RPC** — Isi HELIUS_API_KEY di .env buat RPC yang lebih cepat
-- [ ] **Live wallet setup** — Isi WALLET_PRIVATE_KEY, switch PAPER_TRADING=false
-
-### Medium Priority
-- [ ] **WebSocket tweet monitor** — Ganti polling ke WebSocket/streaming biar lebih cepat
-- [ ] **pump.fun WebSocket** — Monitor new token launches realtime via pump.fun WS
-- [ ] **Birdeye API integration** — Tambah source token search
-- [ ] **Smart wallet tracker module** — Track profitable wallets, detect their buys
-- [ ] **Position PnL tracking** — Realtime PnL update di Telegram
-- [ ] **Multiple position support** — Bisa hold >1 token sekaligus
-- [ ] **Database persistence** — Save positions & history ke SQLite
-
-### Low Priority / Nice to Have
-- [ ] **Auto-buy mode** — Option buat auto-buy tanpa perlu tap button (high risk)
-- [ ] **Trailing stop loss** — Geser SL naik seiring profit naik
-- [ ] **Partial sell** — Jual 50% di target pertama, sisanya trailing
-- [ ] **Blacklist tokens** — Skip token yang udah pernah rug
-- [ ] **Tweet sentiment analysis** — Score tweet positivity buat filter lebih baik
-- [ ] **Multi-account support** — Monitor lebih dari Elon (Vitalik, CZ, dll)
-- [ ] **Dashboard web UI** — Simple HTML dashboard buat monitoring
-
----
-
-## Config Reference (.env)
-
-| Variable | Default | Description |
-|---|---|---|
-| SOLANA_RPC_URL | mainnet public | RPC endpoint |
-| HELIUS_API_KEY | (empty) | Helius RPC key (recommended) |
-| WALLET_PRIVATE_KEY | (empty) | Base58 private key |
-| BUY_AMOUNT_SOL | 0.5 | SOL per buy |
-| MAX_MCAP_USD | 5000 | Max market cap to buy |
-| TAKE_PROFIT_PERCENT | 500 | Auto sell at +500% |
-| STOP_LOSS_PERCENT | 50 | Auto sell at -50% |
-| MAX_SLIPPAGE_BPS | 1500 | 15% slippage |
-| AUTO_SELL | true | Auto TP/SL |
-| PAPER_TRADING | true | Simulated trades |
-| TWEET_POLL_INTERVAL_MS | 5000 | Tweet check interval |
-| NITTER_INSTANCES | nitter.net,... | Comma-separated |
 
 ## Architecture
 
 ```
+┌─────────────────────────────────────────────────────────┐
+│  Bot Process  (pnpm dev)                                │
+│                                                         │
+│  PumpFun Listener ──► Filter ──► Security Check ──► Buy │
+│  (PumpPortal WS)       ↓                               │
+│                   Price Sub (WS)                        │
+│                   Real-time TP/SL                       │
+│                                                         │
+│  Tweet Monitor ──► Keyword ──► Token Finder ──► Buy     │
+│  (Nitter poll)                 (DexScreener)            │
+│                                                         │
+│  Position Monitor (3s loop)                             │
+│  TP1 / TP2 / SL / Trailing SL / Max Hold               │
+│                                                         │
+│  Hono :3001 ◄── PostgreSQL (Supabase + Prisma)          │
+│  WebSocket /ws                                          │
+│  React Dashboard                                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## File Map
+
+```
 src/
-├── config/index.ts          — Config dari .env
-├── monitor/
-│   ├── tweet.monitor.ts     — Poll @elonmusk tweets
-│   └── keyword.extractor.ts — Extract meme keywords
+├── index.ts                  Main orchestrator, position manager
+├── config/index.ts           All env vars
 ├── scanner/
-│   └── token.finder.ts      — Search pump.fun + DexScreener
+│   ├── pumpfun.listener.ts   PumpPortal WS — new token events + price feed
+│   └── token.finder.ts       DexScreener keyword search
+├── monitor/
+│   └── tweet.monitor.ts      Nitter polling for @elonmusk
 ├── swap/
-│   └── jupiter.swap.ts      — Jupiter V6 swap executor
-├── telegram/
-│   └── bot.ts               — Telegram alerts & commands
-├── utils/
-│   └── logger.ts            — Logger
-└── index.ts                 — Main orchestrator
+│   ├── gmgn.swap.ts          GMGN API (primary, Axiom-style fee, MEV off)
+│   └── jupiter.swap.ts       Jupiter V6 (fallback)
+├── backtest/
+│   └── runner.ts             Monte Carlo TP/SL simulator
+├── dashboard/
+│   └── server.ts             Hono REST + WebSocket + pause/resume + backtest API
+├── db/
+│   └── client.ts             Prisma singleton + logEvent()
+└── telegram/
+    └── bot.ts                Alerts + /status /sell commands
+
+dashboard/src/
+├── App.tsx                   UI: Positions / Chart / History / Backtest tabs
+├── hooks/useBot.ts           WS + polling + pause/resume/sell
+└── types.ts
 ```
 
-## Flow Diagram
+---
 
+## Features Completed
+
+### PumpFun Sniper
+- PumpPortal WebSocket — receives new token creation in <100ms
+- Multi-layer filter:
+  - Dev buy range (0.3–5 SOL)
+  - Mcap range (31–50 SOL)
+  - Volume filter (min 0.5 SOL real in bonding curve = mcap - 30)
+  - Creator cooldown 5 min
+  - Blacklist words
+  - Whitelist words (optional)
+  - Max 5 concurrent positions
+- GMGN honeypot check (4s timeout, fail-open)
+- Real-time price via PumpPortal trade subscription after buy
+- DexScreener fallback every 3s (kicks in ~2-5min)
+
+### Multi-Level Take Profit
 ```
-@elonmusk tweets "GROK is amazing! 🚀"
-     ↓ (5s poll)
-Keyword Extractor → ["GROK", "grok", "rocket", "amazing"]
-     ↓
-Token Finder (parallel)
-  ├─ pump.fun search "grok" → found $GROK at $2K mcap ✅
-  ├─ pump.fun search "rocket" → found $ROCKET at $8K mcap ❌ (over max)
-  └─ DexScreener "grok" → found $GROK at $2K mcap (dedup)
-     ↓
-Telegram: "🎯 1 TOKEN FOUND! ⭐ GROK — $2K mcap"
-          [⭐ BUY GROK (0.5 SOL)]
-     ↓ (user taps)
-Jupiter Swap: 0.5 SOL → $GROK
-     ↓
-Position Monitor (every 15s)
-  ├─ +500% → Auto sell ✅ 🎯
-  └─ -50%  → Auto sell ❌ 🛑
++30%  → TP1: sell 80%  (lock modal + profit)
+         SL slides to breakeven
++50%  → TP2: sell 20%  (close all)
+-25%  → SL (before TP1)
+  0%  → Trailing SL (after TP1, price returns to entry)
+30min → Max Hold auto-sell
+```
+- `isSelling` flag prevents double-sell race conditions
+- Immediate SL/TP check in PumpPortal price callback (not just 3s loop)
+
+### Fee Config — Axiom-equivalent
+```
+Priority fee:  0.0000712 SOL (~$0.01/tx)   vs old 0.001 SOL ($0.15/tx) — 14x cheaper
+Max fee cap:   0.00009 SOL
+MEV/JITO:      OFF (pump.fun bonding curve can't be sandwiched)
+Slippage:      20%
 ```
 
-## Related Projects
-- **DLMM LP Agent**: `/DataPopOS/projects/dlmm-lp-agent` — Meteora DLMM liquidity provider
-- **Solana Token Scanner**: `~/solana-token-scanner.js` — Basic token scanner
-- **Solana Wallet Monitor**: `~/solana-wallet-monitor` — Wallet tracking tool
+### Dashboard (http://localhost:3001)
+- Real-time WS push every 5s
+- **Pause / Resume** bot from UI (no terminal restart needed)
+- Manual sell per position
+- 4 tabs:
+  - **Positions** — live PnL, age, entry vs current price
+  - **Chart** — cumulative PnL line chart
+  - **History** — full trade table with Solscan links
+  - **Backtest** — Monte Carlo simulator (below)
+
+### Backtest Tab
+- Configurable: TP1, TP2, SL, max hold, buy amount, num simulations
+- 4 weighted price scenarios (real pump.fun distribution):
+  - Dead 35% — bleed to near zero
+  - Dump 40% — quick pump then hard dump
+  - Pump 20% — healthy pump, may hit TP
+  - Moon 5%  — sustained uptrend
+- Shows: win rate, total PnL, expectancy per trade, breakdown by scenario
+- Change strategy params and re-run without restarting bot
+
+### Telegram Alerts
+- New token found
+- Buy executed
+- Sell executed (with PnL %)
+- Honeypot detected / errors
+- `/status` — positions + uptime + PnL
+- `/sell` — sell all positions
+
+### Database (Supabase PostgreSQL)
+- `Trade` — full buy/sell history with PnL, reason, source
+- `Position` — active open positions
+- `BotEvent` — lifecycle events
+
+---
+
+## Current `.env` Settings
+
+```env
+PAPER_TRADING=true           ← change to false for live
+
+BUY_AMOUNT_SOL=0.5
+TP1_PERCENT=30
+TP1_SELL_PERCENT=80
+TP2_PERCENT=50
+STOP_LOSS_PERCENT=25
+MAX_SLIPPAGE_BPS=2000
+
+PRIORITY_FEE_BUY_SOL=0.0000712
+PRIORITY_FEE_SELL_SOL=0.0000712
+MAX_FEE_SOL=0.00009
+ANTI_MEV=false
+
+PUMP_SNIPE_ENABLED=true
+PUMP_MIN_DEV_BUY_SOL=0.3
+PUMP_MAX_DEV_BUY_SOL=5
+PUMP_MIN_MCAP_SOL=31
+PUMP_MAX_MCAP_SOL=50
+PUMP_MIN_VOLUME_SOL=0.5
+PUMP_MAX_POSITIONS=5
+PUMP_SECURITY_CHECK=true
+PUMP_FAST_MODE=false
+PUMP_CREATOR_COOLDOWN_MS=300000
+PUMP_MAX_HOLD_MINUTES=30
+```
+
+---
+
+## How to Run
+
+```bash
+# Start bot + dashboard
+pnpm dev
+
+# Dashboard
+http://localhost:3001
+
+# Stop
+pkill -f "tsx src/index.ts"
+```
+
+---
+
+## Go-Live Checklist
+
+- [ ] Run Backtest tab — verify expectancy > 0 SOL per trade
+- [ ] Paper trade 24h — check win rate, avg hold time, max loss
+- [ ] Wallet has enough SOL: min `BUY_AMOUNT_SOL × PUMP_MAX_POSITIONS + fees`
+      (default: 0.5 × 5 = 2.5 SOL + ~0.01 SOL fees)
+- [ ] Set `PAPER_TRADING=false`
+- [ ] Set `PUMP_FAST_MODE=false` (security check on for first live runs)
+- [ ] Watch first 10 live trades manually via dashboard + Telegram
+
+---
+
+## Pending / Next Session
+
+### High
+- [x] **Symbol dedup** — skip buying same symbol if already holding (e.g. 3x CHARLIE)
+- [ ] **Cloudflare Tunnel** — HTTPS access to dashboard from outside VPS
+
+### Medium
+- [ ] **CT whale monitor** — snipe from big CT accounts (Murad, cobie, etc.) not just Elon
+- [ ] **Trailing TP** — raise SL as price climbs (vs fixed breakeven after TP1)
+- [x] **SOL price oracle** — Jupiter price API, updates every 60s, fallback ke env value
+
+### Low
+- [ ] Dashboard basic auth (for Cloudflare Tunnel)
+- [ ] Export CSV from History tab
+- [ ] Telegram inline approve/reject before executing buy
+
+---
+
+## Known Behaviors (Not Bugs)
+
+| Behavior | Why |
+|---|---|
+| SL exits at -35% when set to -25% | pump.fun single candle can move -30% instantly; 3s loop + realtime callback minimizes but can't eliminate |
+| PnL shows 0% right after buy | Normal — price only updates when someone else trades that token |
+| Multiple same-symbol positions (e.g. 3x CHARLIE) | Different mint + creator, symbol dedup not yet implemented |
