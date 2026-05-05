@@ -8,6 +8,14 @@ import { useBot } from './hooks/useBot'
 import type { Trade, PairedTrade, PnlPoint } from './types'
 
 function fmt(n: number, d = 2) { return n.toFixed(d) }
+function fmtPrice(n: number): string {
+  if (n === 0) return '0'
+  if (n >= 0.01) return `$${n.toFixed(4)}`
+  // Count leading zeros after decimal point
+  const zeros = Math.max(0, -Math.floor(Math.log10(n)) - 1)
+  const sig = n * Math.pow(10, zeros + 4)
+  return `$0.0${zeros > 0 ? '0'.repeat(zeros - 1) : ''}${Math.round(sig)}`
+}
 function fmtMcap(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`
@@ -378,8 +386,8 @@ export default function App() {
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 mb-2">
-                  <div><span className="text-slate-600">Entry Price</span><br />${pos.entryPrice.toExponential(3)}</div>
-                  <div><span className="text-slate-600">Current Price</span><br />${pos.currentPrice.toExponential(3)}</div>
+                  <div><span className="text-slate-600">Entry Price</span><br />{fmtPrice(pos.entryPrice)}</div>
+                  <div><span className="text-slate-600">Current Price</span><br /><span className={pnlColor(pos.pnlPercent)}>{fmtPrice(pos.currentPrice)}</span></div>
                   <div><span className="text-slate-600">Age</span><br />{fmtAge(pos.ageMinutes)}</div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 mb-3">
