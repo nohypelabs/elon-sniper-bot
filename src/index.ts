@@ -406,6 +406,9 @@ class ElonSniper {
     const pnlSol = CONFIG.PAPER_TRADING
       ? partialSolSpent * (pnlPercent / 100)
       : result.outputAmount > 0 ? (result.outputAmount / 1e9) - partialSolSpent : 0;
+    const currentMcapUsd = position.entryPriceUsd > 0
+      ? position.token.mcapUsd * (position.currentPriceUsd / position.entryPriceUsd)
+      : position.token.mcapUsd;
 
     position.remainingTokens -= tokensToSell;
     this.totalPnlSol += pnlSol;
@@ -418,7 +421,7 @@ class ElonSniper {
           type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
           name: position.token.name, solAmount: position.solSpent * sellPercent / 100,
           tokenAmount: tokensToSell, priceUsd: position.currentPriceUsd,
-          mcapUsd: position.token.mcapUsd, pnlPercent, pnlSol,
+          mcapUsd: currentMcapUsd, pnlPercent, pnlSol,
           txSignature: result.txSignature, source, reason, dex: position.token.dex,
         },
       }),
@@ -444,6 +447,9 @@ class ElonSniper {
     const pnlSol = CONFIG.PAPER_TRADING
       ? position.solSpent * (pnlPercent / 100)
       : result.outputAmount > 0 ? (result.outputAmount / 1e9) - position.solSpent : 0;
+    const currentMcapUsd = position.entryPriceUsd > 0
+      ? position.token.mcapUsd * (position.currentPriceUsd / position.entryPriceUsd)
+      : position.token.mcapUsd;
 
     this.activePositions.delete(mint);
     this.totalPnlSol += pnlSol;
@@ -457,7 +463,7 @@ class ElonSniper {
           type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
           name: position.token.name, solAmount: position.solSpent,
           tokenAmount: position.buyResult.outputAmount,
-          priceUsd: position.currentPriceUsd, mcapUsd: position.token.mcapUsd,
+          priceUsd: position.currentPriceUsd, mcapUsd: currentMcapUsd,
           pnlPercent, pnlSol,
           txSignature: result.txSignature, source, reason,
           dex: position.token.dex,
