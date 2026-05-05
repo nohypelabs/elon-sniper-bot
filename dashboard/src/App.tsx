@@ -386,6 +386,15 @@ export default function App() {
                   <div><span className="text-slate-600">Entry MCap</span><br />${fmtMcap(pos.entryMcapUsd)}</div>
                   <div><span className="text-slate-600">Current MCap</span><br /><span className={pnlColor(pos.pnlPercent)}>${fmtMcap(pos.currentMcapUsd)}</span></div>
                 </div>
+                <div
+                  className="flex items-center gap-2 mb-3 px-2 py-1.5 bg-slate-800/60 rounded-lg cursor-pointer hover:bg-slate-700/60 transition-all group"
+                  onClick={() => navigator.clipboard.writeText(pos.tokenMint)}
+                  title="Click to copy CA"
+                >
+                  <span className="text-xs text-slate-600">CA</span>
+                  <span className="text-xs text-slate-400 font-mono truncate flex-1">{pos.tokenMint}</span>
+                  <span className="text-xs text-slate-600 group-hover:text-violet-400 transition-colors shrink-0">copy</span>
+                </div>
                 {pos.tweetText && (
                   <p className="text-xs text-slate-600 italic mb-3 truncate">"{pos.tweetText}"</p>
                 )}
