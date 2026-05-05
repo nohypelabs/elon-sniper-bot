@@ -199,7 +199,7 @@ export default function App() {
   const [trades, setTrades]       = useState<Trade[]>([])
   const [paired, setPaired]       = useState<PairedTrade[]>([])
   const [pnlData, setPnlData]     = useState<PnlPoint[]>([])
-  const [tab, setTab]             = useState<'positions' | 'history' | 'chart' | 'backtest'>('positions')
+  const [tab, setTab]             = useState<'positions' | 'history' | 'backtest'>('positions')
 
   useEffect(() => {
     fetch('/api/trades?limit=100').then(r => r.json()).then(d => setTrades(d.trades ?? []))
@@ -310,11 +310,33 @@ export default function App() {
         <MiniStat label="Buys"   value={state.buysExecuted.toString()} icon={<ShoppingCart size={12} />} />
       </div>
 
+      {/* PnL Chart — always visible */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">Cumulative PnL (SOL)</h3>
+        {pnlData.length === 0 ? (
+          <Empty text="No completed trades yet" />
+        ) : (
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={pnlData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#475569' }} tickFormatter={v => new Date(v).toLocaleDateString()} />
+              <YAxis tick={{ fontSize: 10, fill: '#475569' }} tickFormatter={v => `${v}`} />
+              <Tooltip
+                contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
+                labelStyle={{ color: '#94a3b8', fontSize: 11 }}
+                formatter={(v) => [`${Number(v).toFixed(4)} SOL`, 'Cumulative PnL']}
+                labelFormatter={v => new Date(v).toLocaleString()}
+              />
+              <ReferenceLine y={0} stroke="#334155" strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="cumulative" stroke="#8b5cf6" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#8b5cf6' }} />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
       {/* Tabs */}
       <div className="flex gap-1 mb-4 bg-slate-900 rounded-lg p-1 w-fit">
         {([
           ['positions', `Positions (${state.activePositions.length})`],
-          ['chart',     'Chart'],
           ['history',   'History'],
           ['backtest',  'Backtest'],
         ] as const).map(([t, label]) => (
@@ -355,10 +377,14 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 mb-3">
-                  <div><span className="text-slate-600">Entry</span><br />${pos.entryPrice.toExponential(3)}</div>
-                  <div><span className="text-slate-600">Current</span><br />${pos.currentPrice.toExponential(3)}</div>
+                <div className="grid grid-cols-3 gap-2 text-xs text-slate-400 mb-2">
+                  <div><span className="text-slate-600">Entry Price</span><br />${pos.entryPrice.toExponential(3)}</div>
+                  <div><span className="text-slate-600">Current Price</span><br />${pos.currentPrice.toExponential(3)}</div>
                   <div><span className="text-slate-600">Age</span><br />{fmtAge(pos.ageMinutes)}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 mb-3">
+                  <div><span className="text-slate-600">Entry MCap</span><br />${fmtMcap(pos.entryMcapUsd)}</div>
+                  <div><span className="text-slate-600">Current MCap</span><br /><span className={pnlColor(pos.pnlPercent)}>${fmtMcap(pos.currentMcapUsd)}</span></div>
                 </div>
                 {pos.tweetText && (
                   <p className="text-xs text-slate-600 italic mb-3 truncate">"{pos.tweetText}"</p>
@@ -371,31 +397,6 @@ export default function App() {
                 </button>
               </div>
             ))
-          )}
-        </div>
-      )}
-
-      {/* PnL Chart */}
-      {tab === 'chart' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">Cumulative PnL (SOL)</h3>
-          {pnlData.length === 0 ? (
-            <Empty text="No completed trades yet" />
-          ) : (
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={pnlData} margin={{ top: 5, right: 10, left: 0, bottom: 5 }}>
-                <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#475569' }} tickFormatter={v => new Date(v).toLocaleDateString()} />
-                <YAxis tick={{ fontSize: 10, fill: '#475569' }} tickFormatter={v => `${v} SOL`} />
-                <Tooltip
-                  contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8 }}
-                  labelStyle={{ color: '#94a3b8', fontSize: 11 }}
-                  formatter={(v) => [`${Number(v).toFixed(4)} SOL`, 'Cumulative PnL']}
-                  labelFormatter={v => new Date(v).toLocaleString()}
-                />
-                <ReferenceLine y={0} stroke="#334155" strokeDasharray="3 3" />
-                <Line type="monotone" dataKey="cumulative" stroke="#8b5cf6" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#8b5cf6' }} />
-              </LineChart>
-            </ResponsiveContainer>
           )}
         </div>
       )}

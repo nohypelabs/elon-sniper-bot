@@ -645,18 +645,24 @@ class ElonSniper {
         : 0;
       const pnlSol = pnlPercent / 100 * pos.solSpent;
 
+      const currentMcapUsd = pos.entryPriceUsd > 0
+        ? pos.token.mcapUsd * (pos.currentPriceUsd / pos.entryPriceUsd)
+        : pos.token.mcapUsd;
+
       positions.push({
-        tokenMint:    mint,
-        symbol:       pos.token.symbol,
-        name:         pos.token.name,
-        entryPrice:   pos.entryPriceUsd,
-        currentPrice: pos.currentPriceUsd,
+        tokenMint:      mint,
+        symbol:         pos.token.symbol,
+        name:           pos.token.name,
+        entryPrice:     pos.entryPriceUsd,
+        currentPrice:   pos.currentPriceUsd,
+        entryMcapUsd:   pos.token.mcapUsd,
+        currentMcapUsd,
         pnlPercent,
         pnlSol,
-        solSpent:     pos.solSpent,
-        ageMinutes:   (Date.now() - pos.entryTime) / 60_000,
-        dex:          pos.token.dex,
-        tweetText:    pos.tweetText,
+        solSpent:       pos.solSpent,
+        ageMinutes:     (Date.now() - pos.entryTime) / 60_000,
+        dex:            pos.token.dex,
+        tweetText:      pos.tweetText,
       });
     }
 

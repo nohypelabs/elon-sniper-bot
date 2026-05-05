@@ -29,6 +29,8 @@ export interface ActivePositionInfo {
   name: string;
   entryPrice: number;
   currentPrice: number;
+  entryMcapUsd: number;
+  currentMcapUsd: number;
   pnlPercent: number;
   pnlSol: number;
   solSpent: number;
