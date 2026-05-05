@@ -82,9 +82,11 @@ async function answerCallback(callbackQueryId: string, text?: string): Promise<v
 
 // ─── Alert functions ──────────────────────────────────────────────
 
-export async function alertTweetDetected(text: string, keywords: string[]): Promise<void> {
+export async function alertTweetDetected(text: string, keywords: string[], author?: string, authorLabel?: string): Promise<void> {
+  const who = authorLabel ? `${authorLabel} (@${author})` : 'Elon Musk (@elonmusk)';
   const msg = [
-    `🐦 <b>ELON TWEET DETECTED!</b>`,
+    `🐦 <b>TWEET DETECTED!</b>`,
+    `👤 <b>${escapeHtml(who)}</b>`,
     '',
     `📝 ${escapeHtml(text.slice(0, 500))}`,
     '',

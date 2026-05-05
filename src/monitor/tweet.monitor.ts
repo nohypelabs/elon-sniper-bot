@@ -1,12 +1,9 @@
 /**
- * Elon Tweet Monitor
+ * Multi-Account Tweet Monitor
  *
- * Polls @elonmusk tweets via multiple sources for reliability:
- * 1. Nitter RSS (free, rotating instances)
- * 2. Twitter embed endpoint (no auth needed)
- * 3. DexScreener social feed fallback
- *
- * Extracts unique/meme-worthy keywords and emits events.
+ * Polls multiple CT whale accounts via Nitter RSS (rotating instances).
+ * Elon is polled every cycle; other accounts rotate one-per-cycle.
+ * Each tweet is deduplicated and filtered for meme keywords before emitting.
  */
 
 import axios from 'axios';
@@ -19,7 +16,27 @@ export interface Tweet {
   text: string;
   timestamp: number;
   keywords: string[];
+  author: string;
+  authorLabel: string;
 }
+
+// Tier 1 — polled every cycle (highest impact accounts)
+const TIER1_ACCOUNTS = [
+  { username: 'elonmusk',       label: 'Elon Musk' },
+  { username: 'realDonaldTrump', label: 'Donald Trump' },
+  { username: 'sama',           label: 'Sam Altman' },
+];
+
+// Tier 2 — round-robin, one per cycle (CT whales)
+const TIER2_ACCOUNTS = [
+  { username: 'blknoiz06',      label: 'ansem' },
+  { username: 'MustStopMurad',  label: 'Murad' },
+  { username: 'cobie',          label: 'cobie' },
+  { username: 'nikitabier',     label: 'Nikita Bier' },
+  { username: 'cz_binance',     label: 'CZ' },
+  { username: 'DegenSpartan',   label: 'DegenSpartan' },
+  { username: 'gainzy222',      label: 'gainzy' },
+];
 
 type TweetCallback = (tweet: Tweet) => void;
 
@@ -27,13 +44,9 @@ export class TweetMonitor {
   private seenTweetIds: Set<string> = new Set();
   private callbacks: TweetCallback[] = [];
   private running = false;
-  private pollInterval: number;
   private nitterIndex = 0;
-  private lastTweetTime = 0;
-
-  constructor() {
-    this.pollInterval = CONFIG.TWEET_POLL_INTERVAL_MS;
-  }
+  private tier2Index = 0;
+  private lastTweetTime: Map<string, number> = new Map();
 
   onNewTweet(callback: TweetCallback): void {
     this.callbacks.push(callback);
@@ -41,17 +54,33 @@ export class TweetMonitor {
 
   async start(): Promise<void> {
     this.running = true;
+    const allAccounts = [...TIER1_ACCOUNTS, ...TIER2_ACCOUNTS];
     logger.info('🐦 Tweet monitor started');
-    logger.info(`   Polling every ${this.pollInterval / 1000}s`);
-    logger.info(`   Nitter instances: ${CONFIG.NITTER_INSTANCES.length}`);
+    logger.info(`   Tier 1 (every cycle): ${TIER1_ACCOUNTS.map(a => a.label).join(', ')}`);
+    logger.info(`   Tier 2 (round-robin): ${TIER2_ACCOUNTS.map(a => a.label).join(', ')}`);
+    logger.info(`   Polling every ${CONFIG.TWEET_POLL_INTERVAL_MS / 1000}s | Nitter instances: ${CONFIG.NITTER_INSTANCES.length}`);
+
+    // Pre-warm seen IDs to avoid firing on startup
+    for (const account of allAccounts) {
+      await this.pollAccount(account.username, account.label, true);
+    }
 
     while (this.running) {
       try {
-        await this.poll();
+        // Tier 1: poll every cycle
+        for (const account of TIER1_ACCOUNTS) {
+          await this.pollAccount(account.username, account.label, false);
+        }
+
+        // Tier 2: one account per cycle (round-robin)
+        const t2 = TIER2_ACCOUNTS[this.tier2Index % TIER2_ACCOUNTS.length];
+        this.tier2Index++;
+        await this.pollAccount(t2.username, t2.label, false);
+
       } catch (error) {
         logger.debug(`Poll cycle error: ${error}`);
       }
-      await this.sleep(this.pollInterval);
+      await this.sleep(CONFIG.TWEET_POLL_INTERVAL_MS);
     }
   }
 
@@ -60,175 +89,97 @@ export class TweetMonitor {
     logger.info('Tweet monitor stopped');
   }
 
-  private async poll(): Promise<void> {
-    // Try multiple sources in order of reliability
-    let tweets: Tweet[] = [];
+  private async pollAccount(username: string, label: string, warmup: boolean): Promise<void> {
+    const tweets = await this.fetchFromNitter(username);
 
-    tweets = await this.fetchFromNitter();
-    if (tweets.length === 0) {
-      tweets = await this.fetchFromTwitterEmbed();
-    }
-
-    // Process new tweets
     for (const tweet of tweets) {
       if (this.seenTweetIds.has(tweet.id)) continue;
-
       this.seenTweetIds.add(tweet.id);
 
-      // Skip old tweets on first load
-      if (this.lastTweetTime === 0) {
-        this.lastTweetTime = tweet.timestamp;
+      const lastSeen = this.lastTweetTime.get(username) ?? 0;
+
+      // On warmup or first poll: just record timestamps, don't fire
+      if (warmup || lastSeen === 0) {
+        this.lastTweetTime.set(username, Math.max(lastSeen, tweet.timestamp));
         continue;
       }
 
-      // Only process tweets newer than what we've seen
-      if (tweet.timestamp <= this.lastTweetTime) continue;
-      this.lastTweetTime = Math.max(this.lastTweetTime, tweet.timestamp);
+      if (tweet.timestamp <= lastSeen) continue;
+      this.lastTweetTime.set(username, Math.max(lastSeen, tweet.timestamp));
 
-      // Extract keywords
       tweet.keywords = extractMemeKeywords(tweet.text);
 
       if (tweet.keywords.length > 0) {
-        logger.info(`🔥 NEW ELON TWEET with meme keywords!`);
-        logger.info(`   Text: ${tweet.text.slice(0, 120)}...`);
+        logger.info(`🔥 NEW TWEET from ${label} (@${username}) with meme keywords!`);
+        logger.info(`   Text: ${tweet.text.slice(0, 120)}`);
         logger.info(`   Keywords: ${tweet.keywords.join(', ')}`);
 
         for (const cb of this.callbacks) {
-          try {
-            cb(tweet);
-          } catch (e) {
-            logger.error(`Callback error: ${e}`);
-          }
+          try { cb(tweet); } catch (e) { logger.error(`Callback error: ${e}`); }
         }
       } else {
-        logger.debug(`Tweet (no meme keywords): ${tweet.text.slice(0, 80)}...`);
+        logger.debug(`[${label}] Tweet (no keywords): ${tweet.text.slice(0, 80)}`);
       }
     }
 
     // Cap seen IDs to prevent memory leak
-    if (this.seenTweetIds.size > 1000) {
+    if (this.seenTweetIds.size > 2000) {
       const arr = Array.from(this.seenTweetIds);
-      this.seenTweetIds = new Set(arr.slice(-500));
+      this.seenTweetIds = new Set(arr.slice(-1000));
     }
   }
 
-  /**
-   * Fetch tweets from Nitter RSS feed (rotating instances)
-   */
-  private async fetchFromNitter(): Promise<Tweet[]> {
+  private async fetchFromNitter(username: string): Promise<Tweet[]> {
     const instances = CONFIG.NITTER_INSTANCES;
     if (instances.length === 0) return [];
 
-    // Rotate through instances
     const instance = instances[this.nitterIndex % instances.length];
     this.nitterIndex++;
 
     try {
-      const url = `${instance}/elonmusk/rss`;
-      const resp = await axios.get(url, {
-        timeout: 10_000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-        },
+      const resp = await axios.get(`${instance}/${username}/rss`, {
+        timeout: 8_000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' },
       });
-
-      const xml = resp.data as string;
-      return this.parseRss(xml);
-    } catch (error) {
-      logger.debug(`Nitter ${instance} failed: ${(error as Error).message}`);
-      return [];
+      return this.parseRss(resp.data as string, username);
+    } catch {
+      // Try next instance silently
+      const next = instances[(this.nitterIndex) % instances.length];
+      try {
+        const resp = await axios.get(`${next}/${username}/rss`, {
+          timeout: 8_000,
+          headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' },
+        });
+        return this.parseRss(resp.data as string, username);
+      } catch {
+        return [];
+      }
     }
   }
 
-  /**
-   * Fallback: fetch from Twitter syndication/embed endpoint (no auth)
-   */
-  private async fetchFromTwitterEmbed(): Promise<Tweet[]> {
-    try {
-      // Twitter syndication timeline endpoint (public, no auth)
-      const url = `https://syndication.twitter.com/srv/timeline-profile/screen-name/elonmusk`;
-      const resp = await axios.get(url, {
-        timeout: 10_000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
-          'Accept': 'text/html',
-        },
-      });
-
-      const html = resp.data as string;
-      return this.parseEmbedHtml(html);
-    } catch (error) {
-      logger.debug(`Twitter embed fallback failed: ${(error as Error).message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Parse Nitter RSS XML into tweets
-   */
-  private parseRss(xml: string): Tweet[] {
+  private parseRss(xml: string, username: string): Tweet[] {
     const tweets: Tweet[] = [];
     const itemRegex = /<item>([\s\S]*?)<\/item>/g;
     let match;
 
     while ((match = itemRegex.exec(xml)) !== null) {
       const item = match[1];
-
       const titleMatch = item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/);
-      const linkMatch = item.match(/<link>(.*?)<\/link>/);
-      const dateMatch = item.match(/<pubDate>(.*?)<\/pubDate>/);
-      const descMatch = item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
+      const linkMatch  = item.match(/<link>(.*?)<\/link>/);
+      const dateMatch  = item.match(/<pubDate>(.*?)<\/pubDate>/);
+      const descMatch  = item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/);
 
       if (!titleMatch) continue;
 
       const text = this.stripHtml(descMatch?.[1] || titleMatch[1]);
       const link = linkMatch?.[1] || '';
       const idMatch = link.match(/status\/(\d+)/);
-      const id = idMatch?.[1] || `nitter_${Date.now()}_${Math.random()}`;
+      const id = idMatch?.[1] || `nitter_${username}_${Date.now()}_${Math.random()}`;
       const timestamp = dateMatch ? new Date(dateMatch[1]).getTime() : Date.now();
 
-      // Skip retweets
       if (text.startsWith('RT @') || text.startsWith('R to @')) continue;
 
-      tweets.push({ id, text, timestamp, keywords: [] });
-    }
-
-    return tweets;
-  }
-
-  /**
-   * Parse Twitter syndication embed HTML
-   */
-  private parseEmbedHtml(html: string): Tweet[] {
-    const tweets: Tweet[] = [];
-
-    // Extract tweet text from timeline-Tweet-text spans
-    const tweetRegex = /data-tweet-id="(\d+)"[\s\S]*?<p[^>]*class="[^"]*timeline-Tweet-text[^"]*"[^>]*>([\s\S]*?)<\/p>/g;
-    let match;
-
-    while ((match = tweetRegex.exec(html)) !== null) {
-      const id = match[1];
-      const text = this.stripHtml(match[2]);
-
-      tweets.push({
-        id,
-        text,
-        timestamp: Date.now(), // Embed doesn't always have timestamps
-        keywords: [],
-      });
-    }
-
-    // Fallback: try simpler pattern
-    if (tweets.length === 0) {
-      const simpleRegex = /"tweet_id":"(\d+)"[\s\S]*?"text":"([\s\S]*?)"/g;
-      while ((match = simpleRegex.exec(html)) !== null) {
-        tweets.push({
-          id: match[1],
-          text: match[2].replace(/\\n/g, ' ').replace(/\\"/g, '"'),
-          timestamp: Date.now(),
-          keywords: [],
-        });
-      }
+      tweets.push({ id, text, timestamp, keywords: [], author: username, authorLabel: username });
     }
 
     return tweets;
@@ -237,13 +188,9 @@ export class TweetMonitor {
   private stripHtml(html: string): string {
     return html
       .replace(/<[^>]+>/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ').trim();
   }
 
   private sleep(ms: number): Promise<void> {

@@ -258,11 +258,11 @@ class ElonSniper {
 
   private async handleNewTweet(tweet: Tweet): Promise<void> {
     this.tweetsDetected++;
-    logger.info(`\n🐦 NEW TWEET #${this.tweetsDetected}: ${tweet.text.slice(0, 100)}`);
+    logger.info(`\n🐦 NEW TWEET #${this.tweetsDetected} from @${tweet.author}: ${tweet.text.slice(0, 100)}`);
 
     await Promise.all([
-      telegram.alertTweetDetected(tweet.text, tweet.keywords),
-      logEvent('TWEET', tweet.text.slice(0, 200), { keywords: tweet.keywords }),
+      telegram.alertTweetDetected(tweet.text, tweet.keywords, tweet.author, tweet.authorLabel),
+      logEvent('TWEET', tweet.text.slice(0, 200), { keywords: tweet.keywords, author: tweet.author }),
     ]);
 
     const tokens = await this.tokenFinder.findTokens(tweet.keywords);
