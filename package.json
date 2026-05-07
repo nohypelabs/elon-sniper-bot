@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
-    "dashboard:dev": "pnpm --filter ./dashboard dev"
+    "dashboard:dev": "pnpm --filter ./dashboard dev",
+    "db:backfill-pnl": "tsx scripts/backfill-pnl.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.0.1",

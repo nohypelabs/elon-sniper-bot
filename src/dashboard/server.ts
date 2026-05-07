@@ -111,17 +111,21 @@ export async function startDashboardServer() {
   });
 
   app.get('/api/trades/paired', async c => {
-    const limit = parseInt(c.req.query('limit') || '50');
-    const sells = await db.trade.findMany({
-      where: { type: 'SELL' },
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-    });
-    const paired = await Promise.all(sells.map(async sell => {
-      const buy = await db.trade.findFirst({
-        where: { type: 'BUY', tokenMint: sell.tokenMint, createdAt: { lte: sell.createdAt } },
+    // Fetch all sells + all buys in 2 queries, join in-memory (avoids N+1)
+    const [sells, buys] = await Promise.all([
+      db.trade.findMany({
+        where: { type: 'SELL' },
         orderBy: { createdAt: 'desc' },
-      });
+      }),
+      db.trade.findMany({
+        where: { type: 'BUY' },
+        select: { tokenMint: true, createdAt: true, mcapUsd: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    const paired = sells.map(sell => {
+      const matchingBuys = buys.filter(b => b.tokenMint === sell.tokenMint && b.createdAt <= sell.createdAt);
+      const buy = matchingBuys[matchingBuys.length - 1];
       return {
         id:          sell.id,
         symbol:      sell.symbol,
@@ -138,7 +142,7 @@ export async function startDashboardServer() {
         txSignature: sell.txSignature,
         source:      sell.source,
       };
-    }));
+    });
     return c.json(paired);
   });
 
@@ -161,14 +165,43 @@ export async function startDashboardServer() {
   app.get('/api/stats', async c => {
     const period = c.req.query('period') || 'all';
     const since  = periodToDate(period);
-    const where  = { type: 'SELL', ...(since ? { createdAt: { gte: since } } : {}) };
-    const sells  = await db.trade.findMany({ where, select: { pnlSol: true, pnlPercent: true } });
+    const sellWhere = { type: 'SELL', ...(since ? { createdAt: { gte: since } } : {}) };
+
+    const [sells, buys] = await Promise.all([
+      db.trade.findMany({
+        where: sellWhere,
+        select: { pnlSol: true, pnlPercent: true, solAmount: true, tokenMint: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+      db.trade.findMany({
+        where: { type: 'BUY' },
+        select: { id: true, tokenMint: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
 
     const totalPnlSol = sells.reduce((s, t) => s + (t.pnlSol ?? 0), 0);
-    const wins        = sells.filter(t => (t.pnlSol ?? 0) > 0).length;
-    const total       = sells.length;
-    const winRate     = total > 0 ? (wins / total) * 100 : 0;
-    const avgPnl      = total > 0 ? sells.reduce((s, t) => s + (t.pnlPercent ?? 0), 0) / total : 0;
+
+    // Group sells by position: each (tokenMint, most-recent-buy-before-sell) = 1 position
+    const positionMap = new Map<string, { pnlSol: number; solAmount: number }>();
+    for (const sell of sells) {
+      const matchingBuys = buys.filter(b => b.tokenMint === sell.tokenMint && b.createdAt <= sell.createdAt);
+      const latestBuy    = matchingBuys[matchingBuys.length - 1];
+      const key          = latestBuy ? `${sell.tokenMint}_${latestBuy.id}` : `${sell.tokenMint}_orphan`;
+      const prev         = positionMap.get(key) ?? { pnlSol: 0, solAmount: 0 };
+      positionMap.set(key, {
+        pnlSol:    prev.pnlSol    + (sell.pnlSol    ?? 0),
+        solAmount: prev.solAmount + (sell.solAmount  ?? 0),
+      });
+    }
+
+    const positions = Array.from(positionMap.values());
+    const wins      = positions.filter(p => p.pnlSol > 0).length;
+    const total     = positions.length;
+    const winRate   = total > 0 ? (wins / total) * 100 : 0;
+    const avgPnl    = total > 0
+      ? positions.reduce((s, p) => s + (p.solAmount > 0 ? (p.pnlSol / p.solAmount) * 100 : 0), 0) / total
+      : 0;
 
     return c.json({ totalPnlSol: parseFloat(totalPnlSol.toFixed(4)), wins, losses: total - wins, total, winRate: parseFloat(winRate.toFixed(1)), avgPnlPercent: parseFloat(avgPnl.toFixed(1)) });
   });

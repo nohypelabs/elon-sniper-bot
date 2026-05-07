@@ -5,7 +5,7 @@ import {
   ResponsiveContainer, ReferenceLine, BarChart, Bar, Cell,
 } from 'recharts'
 import { useBot } from './hooks/useBot'
-import type { Trade, PairedTrade, PnlPoint, Stats, BotConfig } from './types'
+import type { PairedTrade, PnlPoint, Stats, BotConfig } from './types'
 
 function fmt(n: number, d = 2) { return n.toFixed(d) }
 function fmtPrice(n: number): string {
@@ -485,7 +485,6 @@ function SettingsTab() {
 
 export default function App() {
   const { state, connected, sell, pause, resume } = useBot()
-  const [trades, setTrades]       = useState<Trade[]>([])
   const [paired, setPaired]       = useState<PairedTrade[]>([])
   const [pnlData, setPnlData]     = useState<PnlPoint[]>([])
   const [stats, setStats]         = useState<Stats | null>(null)
@@ -528,8 +527,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    fetch('/api/trades?limit=100').then(r => r.json()).then(d => setTrades(d.trades ?? []))
-    fetch('/api/trades/paired?limit=100').then(r => r.json()).then(setPaired)
+    fetch('/api/trades/paired').then(r => r.json()).then(setPaired)
   }, [state.buysExecuted])
 
   useEffect(() => {
@@ -544,22 +542,21 @@ export default function App() {
   const sellTrades  = stats?.total ?? 0
 
   const exportCSV = () => {
-    const headers = ['Time', 'Type', 'Symbol', 'Name', 'SOL Amount', 'Token Amount', 'Price USD', 'Mcap USD', 'PnL %', 'PnL SOL', 'Reason', 'Source', 'DEX', 'TX Signature']
-    const rows = trades.map(t => [
-      new Date(t.createdAt).toISOString(),
-      t.type,
+    const headers = ['Sell Time', 'Buy Time', 'Symbol', 'Name', 'SOL Amount', 'Buy MCap USD', 'Sell MCap USD', 'PnL %', 'PnL SOL', 'Reason', 'Source', 'DEX', 'TX Signature']
+    const rows = paired.map(t => [
+      t.sellTime ? new Date(t.sellTime).toISOString() : '',
+      t.buyTime  ? new Date(t.buyTime).toISOString()  : '',
       t.symbol,
       t.name,
-      t.solAmount,
-      t.tokenAmount,
-      t.priceUsd,
-      t.mcapUsd,
-      t.pnlPercent ?? '',
-      t.pnlSol ?? '',
-      t.reason ?? '',
-      t.source,
-      t.dex,
-      t.txSignature,
+      t.solAmount ?? '',
+      t.buyMcapUsd  ?? '',
+      t.sellMcapUsd ?? '',
+      t.pnlPercent  ?? '',
+      t.pnlSol      ?? '',
+      t.reason      ?? '',
+      t.source      ?? '',
+      t.dex         ?? '',
+      t.txSignature ?? '',
     ])
     const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
@@ -764,7 +761,7 @@ export default function App() {
         <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-2 px-4 pt-3 pb-3 border-b border-slate-800">
-            <span className="text-xs text-slate-500 mr-auto">{paired.length} completed trades</span>
+            <span className="text-xs text-slate-500 mr-auto">{paired.length} completed trades (all)</span>
 
             {/* Filter by result */}
             <select
