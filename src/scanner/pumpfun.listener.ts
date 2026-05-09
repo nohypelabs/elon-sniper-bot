@@ -141,6 +141,35 @@ export class PumpFunListener {
     // PumpPortal sends a confirmation on subscribe — skip it
     if (!msg.mint || msg.txType !== 'create') return;
 
+    this.stats.received++;
+
+    // Optional hard-block for mayhem-like feeds mixed into upstream streams
+    if (CONFIG.PUMP_BLOCK_MAYHEM) {
+      const sourceText = [
+        msg.platform,
+        msg.source,
+        msg.market,
+        msg.dex,
+        msg.protocol,
+        msg.exchange,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      if (sourceText.includes('mayhem')) {
+        this.stats.filtered++;
+        logger.info(`⏭ [${this.stats.received}] ${msg.symbol || msg.mint} filtered: mayhem source (${sourceText})`);
+        return;
+      }
+    }
+
+    // Enforce pump.fun new-pair shape when requested
+    if (CONFIG.PUMP_ONLY_NEW_PAIR && (!msg.bondingCurveKey || !msg.vSolInBondingCurve || !msg.vTokensInBondingCurve)) {
+      this.stats.filtered++;
+      logger.info(`⏭ [${this.stats.received}] ${msg.symbol || msg.mint} filtered: non pump.fun new-pair event shape`);
+      return;
+    }
+
     // vSolInBondingCurve starts at 30 (virtual reserves) + any real SOL dev spent
     // So real dev SOL spend = vSolInBondingCurve - 30
     const vSolInCurve    = parseFloat(msg.vSolInBondingCurve) || 30;
@@ -165,8 +194,6 @@ export class PumpFunListener {
       signature:       msg.signature || '',
       timestamp:       Date.now(),
     };
-
-    this.stats.received++;
 
     const reject = this.filter(token);
     if (reject) {

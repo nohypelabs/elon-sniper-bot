@@ -46,6 +46,8 @@ export const CONFIG = {
   PUMP_MAX_POSITIONS:   parseInt(process.env.PUMP_MAX_POSITIONS || '3'),
   PUMP_SECURITY_CHECK:  process.env.PUMP_SECURITY_CHECK !== 'false',
   PUMP_FAST_MODE:       process.env.PUMP_FAST_MODE === 'true', // buy first, check after
+  PUMP_BLOCK_MAYHEM:    process.env.PUMP_BLOCK_MAYHEM !== 'false',
+  PUMP_ONLY_NEW_PAIR:   process.env.PUMP_ONLY_NEW_PAIR !== 'false',
   PUMP_CREATOR_COOLDOWN_MS: parseInt(process.env.PUMP_CREATOR_COOLDOWN_MS || '300000'), // 5 min
   PUMP_MIN_NAME_LEN:    parseInt(process.env.PUMP_MIN_NAME_LEN || '3'),
   PUMP_MIN_SYMBOL_LEN:  parseInt(process.env.PUMP_MIN_SYMBOL_LEN || '2'),
