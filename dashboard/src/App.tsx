@@ -444,6 +444,7 @@ function SettingsTab() {
           {N('TP1_PERCENT',          'TP1 %',             1,    1)}
           {N('TP1_SELL_PERCENT',     'TP1 Sell %',        1,    1)}
           {N('TP2_PERCENT',          'TP2 %',             1,    1)}
+          {N('MOONBAG_PERCENT',      'Moonbag %',         1,    0)}
           {N('PUMP_MAX_POSITIONS',   'Max Posisi',        1,    1)}
           {N('PUMP_MAX_HOLD_MINUTES','Max Hold (min)',    1,    0)}
         </div>
@@ -467,6 +468,7 @@ function SettingsTab() {
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Switches</p>
           {T('AUTO_SELL', 'Auto Sell')}
           {T('ANTI_MEV',  'Anti-MEV')}
+          {T('MOONBAG_ENABLED', 'Moonbag Enabled')}
           <p className="text-xs text-slate-600 mt-3 leading-relaxed">
             Mode Paper/Live dan Wallet diatur dari header atas.
           </p>

@@ -84,6 +84,7 @@ class ElonSniper {
     logger.info(`  Max Positions: ${CONFIG.PUMP_MAX_POSITIONS}`);
     logger.info(`  Session Risk: max loss ${CONFIG.PUMP_MAX_SESSION_LOSS_SOL} SOL | max consecutive losses ${CONFIG.PUMP_MAX_CONSECUTIVE_LOSSES}`);
     logger.info(`  TP1: +${CONFIG.TP1_PERCENT}% (sell ${CONFIG.TP1_SELL_PERCENT}%) → TP2: +${CONFIG.TP2_PERCENT}% (close) | SL: -${CONFIG.STOP_LOSS_PERCENT}%`);
+    logger.info(`  Moonbag: ${CONFIG.MOONBAG_ENABLED ? `ON (${CONFIG.MOONBAG_PERCENT}%)` : 'OFF'}`);
     logger.info('='.repeat(50));
 
     // Dashboard
@@ -236,15 +237,12 @@ class ElonSniper {
           (pos.tp1Hit && !pos.tp2Hit && pnl >= CONFIG.TP2_PERCENT) ||
           (!pos.tp1Hit && pnl >= CONFIG.TP2_PERCENT)
         )) {
-          pos.tp2Hit = true;
-          pos.isSelling = true;
-          logger.info(`🎯 TP2 (realtime) +${pnl.toFixed(1)}%: ${token.symbol}`);
-          this.executeSell(token.mint, pos, `TP2 +${CONFIG.TP2_PERCENT}%`).catch(() => {});
+          this.executeTp2TakeProfit(token.mint, pos, pnl, true).catch(() => {});
           return;
         }
 
         // Immediate SL check
-        if (!pos.tp1Hit && CONFIG.AUTO_SELL && pnl <= -effectiveStopLoss) {
+        if (!pos.tp1Hit && !pos.tp2Hit && CONFIG.AUTO_SELL && pnl <= -effectiveStopLoss) {
           pos.isSelling = true;
           logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${token.symbol}`);
           this.executeSell(token.mint, pos, `SL -${effectiveStopLoss}% (realtime)`).catch(() => {});
@@ -544,6 +542,7 @@ class ElonSniper {
           if (
             position.token.dex === 'pump.fun' &&
             CONFIG.AUTO_SELL &&
+            !position.tp2Hit &&
             pnlNow < 0 &&
             ageMs > CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES * 60_000
           ) {
@@ -558,6 +557,7 @@ class ElonSniper {
           if (
             position.token.dex === 'pump.fun' &&
             CONFIG.AUTO_SELL &&
+            !position.tp2Hit &&
             ageMs > CONFIG.PUMP_MAX_HOLD_MINUTES * 60_000
           ) {
             const pnl = position.entryPriceUsd > 0
@@ -614,23 +614,18 @@ class ElonSniper {
 
             // TP2: sell remaining at TP2_PERCENT gain (full close)
             if (position.tp1Hit && !position.tp2Hit && pnlPercent >= CONFIG.TP2_PERCENT) {
-              position.tp2Hit = true;
-              position.isSelling = true;
-              logger.info(`🎯 TP2 +${pnlPercent.toFixed(1)}%: ${position.token.symbol} — closing position`);
-              await this.executeSell(mint, position, `TP2 +${CONFIG.TP2_PERCENT}%`);
+              await this.executeTp2TakeProfit(mint, position, pnlPercent, false);
               continue;
             }
 
             // Fallback full TP (jumped directly past TP2 without hitting TP1)
             if (!position.tp1Hit && pnlPercent >= CONFIG.TP2_PERCENT) {
-              position.isSelling = true;
-              logger.info(`🎯 TP FULL +${pnlPercent.toFixed(1)}%: ${position.token.symbol}`);
-              await this.executeSell(mint, position, `TP full +${CONFIG.TP2_PERCENT}%`);
+              await this.executeTp2TakeProfit(mint, position, pnlPercent, false);
               continue;
             }
 
             // Stop Loss
-            if (!position.tp1Hit && pnlPercent <= -effectiveStopLoss) {
+            if (!position.tp1Hit && !position.tp2Hit && pnlPercent <= -effectiveStopLoss) {
               position.isSelling = true;
               logger.info(`🛑 STOP LOSS ${pnlPercent.toFixed(1)}%: ${position.token.symbol}`);
               await this.executeSell(mint, position, `SL -${effectiveStopLoss}%`);
@@ -874,6 +869,42 @@ class ElonSniper {
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
+
+  private async executeTp2TakeProfit(
+    mint: string,
+    position: ActivePosition,
+    pnlPercent: number,
+    realtime: boolean,
+  ): Promise<void> {
+    position.tp2Hit = true;
+    position.isSelling = true;
+    const prefix = realtime ? 'realtime' : 'poll';
+    const symbol = position.token.symbol;
+
+    const moonbagEnabled = CONFIG.MOONBAG_ENABLED && CONFIG.MOONBAG_PERCENT > 0 && CONFIG.MOONBAG_PERCENT < 100;
+    if (moonbagEnabled) {
+      const sellPct = Math.max(1, Math.min(99, 100 - CONFIG.MOONBAG_PERCENT));
+      const beforeTokens = position.remainingTokens;
+      logger.info(
+        `🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — sell ${sellPct}%, keep ${CONFIG.MOONBAG_PERCENT}% moonbag`,
+      );
+      await this.executePartialSell(
+        mint,
+        position,
+        sellPct,
+        `TP2 +${CONFIG.TP2_PERCENT}% (moonbag ${CONFIG.MOONBAG_PERCENT}% kept)`,
+      );
+      if (position.remainingTokens < beforeTokens) {
+        position.solSpent = position.solSpent * (1 - sellPct / 100);
+      }
+      position.tp1Hit = true;
+      position.isSelling = false;
+      return;
+    }
+
+    logger.info(`🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — closing position`);
+    await this.executeSell(mint, position, `TP2 +${CONFIG.TP2_PERCENT}%`);
+  }
 
   private registerClosedTradeRisk(pnlSol: number): void {
     this.sessionRealizedPnlSol += pnlSol;

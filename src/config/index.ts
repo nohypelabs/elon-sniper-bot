@@ -64,6 +64,8 @@ export const CONFIG = {
   TP1_PERCENT:      parseFloat(process.env.TP1_PERCENT || '30'),   // first TP
   TP1_SELL_PERCENT: parseFloat(process.env.TP1_SELL_PERCENT || '50'), // sell 50% at TP1
   TP2_PERCENT:      parseFloat(process.env.TP2_PERCENT || '80'),   // second TP — sell all
+  MOONBAG_ENABLED:  process.env.MOONBAG_ENABLED !== 'false',
+  MOONBAG_PERCENT:  parseFloat(process.env.MOONBAG_PERCENT || '15'),
 };
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';

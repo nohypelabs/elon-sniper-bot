@@ -34,6 +34,7 @@ export interface BotConfig {
   TP1_PERCENT: number
   TP1_SELL_PERCENT: number
   TP2_PERCENT: number
+  MOONBAG_PERCENT: number
   PRIORITY_FEE_BUY_SOL: number
   PRIORITY_FEE_SELL_SOL: number
   MAX_FEE_SOL: number
@@ -45,6 +46,7 @@ export interface BotConfig {
   PUMP_MAX_MCAP_SOL: number
   AUTO_SELL: boolean
   ANTI_MEV: boolean
+  MOONBAG_ENABLED: boolean
   PAPER_TRADING: boolean
 }
 
