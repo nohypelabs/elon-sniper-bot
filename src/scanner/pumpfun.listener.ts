@@ -193,6 +193,25 @@ export class PumpFunListener {
   // ─── Filter logic ─────────────────────────────────────────────
 
   private filter(token: NewPumpToken): string | null {
+    const cleanName = (token.name || '').trim();
+    const cleanSymbol = (token.symbol || '').trim();
+
+    if (cleanName.length < CONFIG.PUMP_MIN_NAME_LEN) {
+      return `name too short (${cleanName.length} < ${CONFIG.PUMP_MIN_NAME_LEN})`;
+    }
+    if (cleanSymbol.length < CONFIG.PUMP_MIN_SYMBOL_LEN) {
+      return `symbol too short (${cleanSymbol.length} < ${CONFIG.PUMP_MIN_SYMBOL_LEN})`;
+    }
+    if (!/^[a-zA-Z0-9\s$._-]+$/.test(cleanName)) {
+      return 'name contains suspicious characters';
+    }
+    if (!/^[a-zA-Z0-9$._-]+$/.test(cleanSymbol)) {
+      return 'symbol contains suspicious characters';
+    }
+    if (CONFIG.PUMP_REQUIRE_SOCIALS && !token.uri) {
+      return 'missing metadata uri';
+    }
+
     // Dedup
     if (this.recentMints.has(token.mint)) return 'already seen';
 

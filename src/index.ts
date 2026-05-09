@@ -44,6 +44,8 @@ class ElonSniper {
   private tweetsDetected = 0;
   private buysExecuted = 0;
   private totalPnlSol = 0;
+  private sessionRealizedPnlSol = 0;
+  private consecutiveLosses = 0;
   private solBalance = 0;
   private paused = false;
   private solPriceUsd = CONFIG.PUMP_SOL_PRICE_USD; // live-updated by oracle loop
@@ -80,6 +82,7 @@ class ElonSniper {
     logger.info(`  PumpFun Snipe: ${CONFIG.PUMP_SNIPE_ENABLED ? 'ON' : 'OFF'}`);
     logger.info(`  Buy Amount: ${CONFIG.BUY_AMOUNT_SOL} SOL`);
     logger.info(`  Max Positions: ${CONFIG.PUMP_MAX_POSITIONS}`);
+    logger.info(`  Session Risk: max loss ${CONFIG.PUMP_MAX_SESSION_LOSS_SOL} SOL | max consecutive losses ${CONFIG.PUMP_MAX_CONSECUTIVE_LOSSES}`);
     logger.info(`  TP1: +${CONFIG.TP1_PERCENT}% (sell ${CONFIG.TP1_SELL_PERCENT}%) → TP2: +${CONFIG.TP2_PERCENT}% (close) | SL: -${CONFIG.STOP_LOSS_PERCENT}%`);
     logger.info('='.repeat(50));
 
@@ -211,6 +214,7 @@ class ElonSniper {
       this.pumpListener.subscribeToTrades(token.mint, (priceInSol) => {
         const pos = this.activePositions.get(token.mint);
         if (!pos || pos.isSelling) return;
+        const effectiveStopLoss = Math.min(CONFIG.STOP_LOSS_PERCENT, 25);
 
         pos.currentPriceUsd = priceInSol * this.solPriceUsd;
         if (pos.entryPriceUsd <= 0) return;
@@ -240,10 +244,10 @@ class ElonSniper {
         }
 
         // Immediate SL check
-        if (!pos.tp1Hit && CONFIG.AUTO_SELL && pnl <= -CONFIG.STOP_LOSS_PERCENT) {
+        if (!pos.tp1Hit && CONFIG.AUTO_SELL && pnl <= -effectiveStopLoss) {
           pos.isSelling = true;
           logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${token.symbol}`);
-          this.executeSell(token.mint, pos, `SL -${CONFIG.STOP_LOSS_PERCENT}% (realtime)`).catch(() => {});
+          this.executeSell(token.mint, pos, `SL -${effectiveStopLoss}% (realtime)`).catch(() => {});
           return;
         }
 
@@ -319,6 +323,11 @@ class ElonSniper {
   }
 
   private async executeBuy(token: FoundToken, tweetText?: string): Promise<void> {
+    if (this.paused) {
+      logger.warn(`Buy skipped while paused: ${token.symbol}`);
+      return;
+    }
+
     const solAmount = CONFIG.BUY_AMOUNT_SOL;
 
     if (!CONFIG.PAPER_TRADING) {
@@ -431,6 +440,7 @@ class ElonSniper {
 
     position.remainingTokens -= tokensToSell;
     this.totalPnlSol += pnlSol;
+    this.registerClosedTradeRisk(pnlSol);
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' : CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
@@ -472,6 +482,7 @@ class ElonSniper {
 
     this.activePositions.delete(mint);
     this.totalPnlSol += pnlSol;
+    this.registerClosedTradeRisk(pnlSol);
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' :
                    CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
@@ -572,6 +583,7 @@ class ElonSniper {
           logger.info(`📈 ${position.token.symbol} | entry: $${position.entryPriceUsd.toExponential(3)} | now: $${position.currentPriceUsd.toExponential(3)} | pnl: ${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(1)}%`);
 
           if (CONFIG.AUTO_SELL && !position.isSelling) {
+            const effectiveStopLoss = Math.min(CONFIG.STOP_LOSS_PERCENT, 25);
             // TP1: sell TP1_SELL_PERCENT% at TP1_PERCENT gain
             if (!position.tp1Hit && pnlPercent >= CONFIG.TP1_PERCENT) {
               position.tp1Hit = true;
@@ -601,10 +613,10 @@ class ElonSniper {
             }
 
             // Stop Loss
-            if (!position.tp1Hit && pnlPercent <= -CONFIG.STOP_LOSS_PERCENT) {
+            if (!position.tp1Hit && pnlPercent <= -effectiveStopLoss) {
               position.isSelling = true;
               logger.info(`🛑 STOP LOSS ${pnlPercent.toFixed(1)}%: ${position.token.symbol}`);
-              await this.executeSell(mint, position, `SL -${CONFIG.STOP_LOSS_PERCENT}%`);
+              await this.executeSell(mint, position, `SL -${effectiveStopLoss}%`);
               continue;
             }
 
@@ -765,6 +777,7 @@ class ElonSniper {
       `⏱ Uptime: ${upHours}h`,
       `🐦 Tweets: ${this.tweetsDetected} | 🛒 Buys: ${this.buysExecuted}`,
       `💰 SOL: ${this.solBalance.toFixed(3)} | PnL: ${this.totalPnlSol >= 0 ? '+' : ''}${this.totalPnlSol.toFixed(3)} SOL`,
+      `🧯 Session: ${this.sessionRealizedPnlSol >= 0 ? '+' : ''}${this.sessionRealizedPnlSol.toFixed(3)} SOL | ${this.consecutiveLosses} consecutive losses`,
       `📊 Positions: ${this.activePositions.size}`,
     ];
 
@@ -843,6 +856,28 @@ class ElonSniper {
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
+
+  private registerClosedTradeRisk(pnlSol: number): void {
+    this.sessionRealizedPnlSol += pnlSol;
+    this.consecutiveLosses = pnlSol < 0 ? this.consecutiveLosses + 1 : 0;
+
+    if (this.sessionRealizedPnlSol <= -Math.abs(CONFIG.PUMP_MAX_SESSION_LOSS_SOL)) {
+      this.paused = true;
+      logger.warn(`🧯 Circuit breaker: session loss ${this.sessionRealizedPnlSol.toFixed(3)} SOL reached. Bot paused.`);
+      telegram.alertError(
+        `🧯 Bot auto-paused: session loss cap hit (${this.sessionRealizedPnlSol.toFixed(3)} SOL).`,
+      ).catch(() => {});
+      return;
+    }
+
+    if (this.consecutiveLosses >= CONFIG.PUMP_MAX_CONSECUTIVE_LOSSES) {
+      this.paused = true;
+      logger.warn(`🧯 Circuit breaker: ${this.consecutiveLosses} consecutive losses. Bot paused.`);
+      telegram.alertError(
+        `🧯 Bot auto-paused: ${this.consecutiveLosses} consecutive losing exits.`,
+      ).catch(() => {});
+    }
+  }
 }
 
 function fmtK(n: number): string {
