@@ -2,6 +2,7 @@ export interface ActivePositionInfo {
   tokenMint: string
   symbol: string
   name: string
+  apedAt: string
   entryPrice: number
   currentPrice: number
   entryMcapUsd: number

@@ -25,6 +25,11 @@ function fmtAge(min: number) {
   if (min < 60) return `${Math.floor(min)}m`
   return `${(min / 60).toFixed(1)}h`
 }
+function fmtDateTime(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '-'
+  return d.toLocaleString()
+}
 function fmtUptime(ms: number) {
   const h = Math.floor(ms / 3_600_000)
   const m = Math.floor((ms % 3_600_000) / 60_000)
@@ -727,6 +732,13 @@ export default function App() {
                   <div><span className="text-slate-600">Entry Price</span><br />{fmtPrice(pos.entryPrice)}</div>
                   <div><span className="text-slate-600">Current Price</span><br /><span className={pnlColor(pos.pnlPercent)}>{fmtPrice(pos.currentPrice)}</span></div>
                   <div><span className="text-slate-600">Age</span><br />{fmtAge(pos.ageMinutes)}</div>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 mb-2">
+                  <div><span className="text-slate-600">Aped At</span><br />{fmtDateTime(pos.apedAt)}</div>
+                  <div>
+                    <span className="text-slate-600">Aped Amount</span><br />
+                    {fmt(pos.solSpent, 3)} SOL {state.solPriceUsd > 0 ? `(≈ $${fmt(pos.solSpent * state.solPriceUsd, 2)})` : ''}
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 mb-3">
                   <div><span className="text-slate-600">Entry MCap</span><br />${fmtMcap(pos.entryMcapUsd)}</div>

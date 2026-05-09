@@ -536,6 +536,23 @@ class ElonSniper {
           if (position.isSelling) continue;
 
           const ageMs = Date.now() - position.entryTime;
+          const pnlNow = position.entryPriceUsd > 0
+            ? ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
+            : 0;
+
+          // Loss hold cap: if still red after X minutes, force-exit early.
+          if (
+            position.token.dex === 'pump.fun' &&
+            CONFIG.AUTO_SELL &&
+            pnlNow < 0 &&
+            ageMs > CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES * 60_000
+          ) {
+            logger.info(
+              `⏰ LOSS HOLD CAP: ${position.token.symbol} ${pnlNow.toFixed(1)}% — selling after ${CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES}min in loss`,
+            );
+            await this.executeSell(mint, position, `max-hold-loss-${CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES}min`);
+            continue;
+          }
 
           // Max hold time for pump.fun tokens
           if (
@@ -684,6 +701,7 @@ class ElonSniper {
         tokenMint:      mint,
         symbol:         pos.token.symbol,
         name:           pos.token.name,
+        apedAt:         new Date(pos.entryTime).toISOString(),
         entryPrice:     pos.entryPriceUsd,
         currentPrice:   pos.currentPriceUsd,
         entryMcapUsd:   pos.token.mcapUsd,

@@ -51,8 +51,11 @@ async function startTunnel(): Promise<string> {
     return '⚠️ Tunnel sudah berjalan. Kirim /tunnel stop dulu.';
   }
 
+  const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || '3001';
+  const dashboardUrl = `http://localhost:${dashboardPort}`;
+
   return new Promise(resolve => {
-    tunnelProcess = spawn('cloudflared', ['tunnel', '--url', 'http://localhost:3001'], {
+    tunnelProcess = spawn('cloudflared', ['tunnel', '--url', dashboardUrl], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -70,7 +73,7 @@ async function startTunnel(): Promise<string> {
       if (match && !resolved) {
         resolved = true;
         clearTimeout(timeout);
-        resolve(`🌐 <b>Dashboard aktif!</b>\n\n🔗 <a href="${match[0]}">${match[0]}</a>\n\n⚠️ URL berubah kalau tunnel di-restart.`);
+        resolve(`🌐 <b>Dashboard aktif!</b>\n\n🔗 <a href="${match[0]}">${match[0]}</a>\n\n🏠 Local: <code>${dashboardUrl}</code>\n⚠️ URL berubah kalau tunnel di-restart.`);
       }
     };
 

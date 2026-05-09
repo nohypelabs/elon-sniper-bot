@@ -40,6 +40,7 @@ export interface ActivePositionInfo {
   tokenMint: string;
   symbol: string;
   name: string;
+  apedAt: string;
   entryPrice: number;
   currentPrice: number;
   entryMcapUsd: number;
@@ -380,9 +381,34 @@ export async function startDashboardServer() {
   // Push state every 5s
   setInterval(broadcastState, 5_000);
 
-  httpServer.listen(DASHBOARD_PORT, () => {
-    logger.info(`Dashboard → http://localhost:${DASHBOARD_PORT}`);
-  });
+  const bindPort = async (startPort: number, maxAttempts = 10): Promise<number> => {
+    for (let i = 0; i < maxAttempts; i++) {
+      const port = startPort + i;
+      const ok = await new Promise<boolean>((resolve) => {
+        const onError = (err: NodeJS.ErrnoException) => {
+          httpServer.off('listening', onListening);
+          if (err.code === 'EADDRINUSE') resolve(false);
+          else throw err;
+        };
+        const onListening = () => {
+          httpServer.off('error', onError);
+          resolve(true);
+        };
+        httpServer.once('error', onError);
+        httpServer.once('listening', onListening);
+        httpServer.listen(port);
+      });
+      if (ok) return port;
+    }
+    throw new Error(`No free dashboard port in range ${startPort}-${startPort + maxAttempts - 1}`);
+  };
+
+  const actualPort = await bindPort(DASHBOARD_PORT, 12);
+  process.env.DASHBOARD_PORT = String(actualPort);
+  if (actualPort !== DASHBOARD_PORT) {
+    logger.warn(`Dashboard port ${DASHBOARD_PORT} busy, switched to ${actualPort}`);
+  }
+  logger.info(`Dashboard → http://localhost:${actualPort}`);
 
   return httpServer;
 }

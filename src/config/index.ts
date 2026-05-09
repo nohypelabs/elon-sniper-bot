@@ -55,6 +55,7 @@ export const CONFIG = {
   PUMP_BLACKLIST_WORDS: (process.env.PUMP_BLACKLIST_WORDS || 'test,rug,scam,honeypot,fake,copy,dupe').split(',').map(s => s.trim().toLowerCase()),
   PUMP_WHITELIST_WORDS: (process.env.PUMP_WHITELIST_WORDS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
   PUMP_MAX_HOLD_MINUTES: parseInt(process.env.PUMP_MAX_HOLD_MINUTES || '30'),
+  PUMP_MAX_HOLD_LOSS_MINUTES: parseInt(process.env.PUMP_MAX_HOLD_LOSS_MINUTES || '5'),
   PUMP_SOL_PRICE_USD: parseFloat(process.env.PUMP_SOL_PRICE_USD || '150'),
 
   // Multi-level take profit
