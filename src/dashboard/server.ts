@@ -149,9 +149,16 @@ export async function startDashboardServer() {
 
   app.get('/api/pnl', async c => {
     const period = c.req.query('period') || 'all';
+    const mode = c.req.query('mode') || 'PAPER';
     const since  = periodToDate(period);
+    const where = { 
+      type: 'SELL', 
+      pnlSol: { not: null }, 
+      ...(since ? { createdAt: { gte: since } } : {}),
+      ...(mode === 'LIVE' ? { source: { not: "paper" } } : {})
+    };
     const sells = await db.trade.findMany({
-      where: { type: 'SELL', pnlSol: { not: null }, ...(since ? { createdAt: { gte: since } } : {}) },
+      where,
       orderBy: { createdAt: 'asc' },
       select: { createdAt: true, pnlSol: true, pnlPercent: true, symbol: true },
     });
@@ -165,8 +172,13 @@ export async function startDashboardServer() {
 
   app.get('/api/stats', async c => {
     const period = c.req.query('period') || 'all';
+    const mode = c.req.query('mode') || 'PAPER';
     const since  = periodToDate(period);
-    const sellWhere = { type: 'SELL', ...(since ? { createdAt: { gte: since } } : {}) };
+    const sellWhere = { 
+      type: 'SELL', 
+      ...(since ? { createdAt: { gte: since } } : {}),
+      ...(mode === 'LIVE' ? { source: { not: "paper" } } : {})
+    };
 
     const [sells, buys] = await Promise.all([
       db.trade.findMany({

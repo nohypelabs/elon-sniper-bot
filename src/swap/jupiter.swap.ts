@@ -18,7 +18,7 @@ import axios from 'axios';
 import { logger } from '../utils/logger';
 import { CONFIG, SOL_MINT } from '../config';
 
-const JUPITER_API = 'https://quote-api.jup.ag/v6';
+const JUPITER_API = 'https://api.jup.ag/v6';
 
 export interface SwapResult {
   success: boolean;

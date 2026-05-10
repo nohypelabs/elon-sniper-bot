@@ -31,6 +31,7 @@ type PauseCallback = () => void;
 type ResumeCallback = () => void;
 type BalanceCallback = () => string;
 type PnlCallback = () => Promise<string>;
+type SetModeCallback = (paper: boolean) => Promise<void>;
 
 let onSellCommand: SellCallback | null = null;
 let onStatusCommand: StatusCallback | null = null;
@@ -39,6 +40,7 @@ let onPauseCommand: PauseCallback | null = null;
 let onResumeCommand: ResumeCallback | null = null;
 let onBalanceCommand: BalanceCallback | null = null;
 let onPnlCommand: PnlCallback | null = null;
+let onSetModeCommand: SetModeCallback | null = null;
 let pollingOffset = 0;
 let pollingActive = false;
 
@@ -289,6 +291,7 @@ export function registerHandlers(handlers: {
   onResume: ResumeCallback;
   getBalance: BalanceCallback;
   getPnl: PnlCallback;
+  onSetMode: SetModeCallback;
 }): void {
   onStatusCommand  = handlers.getStatus;
   onSellCommand    = handlers.onSell;
@@ -299,6 +302,7 @@ export function registerHandlers(handlers: {
   onResumeCommand  = handlers.onResume;
   onBalanceCommand = handlers.getBalance;
   onPnlCommand     = handlers.getPnl;
+  onSetModeCommand = handlers.onSetMode;
 }
 
 export function startPolling(): void {
@@ -358,6 +362,16 @@ async function pollLoop(): Promise<void> {
           if (onBalanceCommand) await send(onBalanceCommand());
         } else if (text === '/pnl') {
           if (onPnlCommand) await send(await onPnlCommand());
+        } else if (text === '/live') {
+          if (onSetModeCommand) {
+            await onSetModeCommand(false);
+            await send('✅ Mode diubah ke LIVE. Bot akan gunakan saldo nyata saat buka posisi.');
+          }
+        } else if (text === '/paper') {
+          if (onSetModeCommand) {
+            await onSetModeCommand(true);
+            await send('✅ Mode diubah ke PAPER. Bot akan gunakan simulasi untuk open posisi.');
+          }
         } else if (text === '/tunnel') {
           await send('⏳ Starting tunnel...');
           await send(await startTunnel());
@@ -387,6 +401,8 @@ async function pollLoop(): Promise<void> {
             `/sell - Jual semua posisi`,
             `/pause - Jeda bot (stop buka posisi baru)`,
             `/resume - Lanjutkan bot`,
+            `/live - Switch ke LIVE mode`,
+            `/paper - Switch ke PAPER mode`,
             `/tunnel - Start dashboard tunnel`,
             `/tunnel stop - Stop tunnel`,
             `/config - Konfigurasi`,

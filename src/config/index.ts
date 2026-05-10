@@ -10,6 +10,9 @@ export const CONFIG = {
 
   // Sniper
   BUY_AMOUNT_SOL: parseFloat(process.env.BUY_AMOUNT_SOL || '0.5'),
+  BUY_AMOUNT_SECONDARY: parseFloat(process.env.BUY_AMOUNT_SECONDARY || '0.05'),
+  PUMP_PRIORITY_MODE: process.env.PUMP_PRIORITY_MODE === 'true',
+  PUMP_MAX_POSITIONS: parseInt(process.env.PUMP_MAX_POSITIONS || '3'),
   MIN_MCAP_USD: parseFloat(process.env.MIN_MCAP_USD || '0'),
   MAX_MCAP_USD: parseFloat(process.env.MAX_MCAP_USD || '5000'),
   TAKE_PROFIT_PERCENT: parseFloat(process.env.TAKE_PROFIT_PERCENT || '60'),

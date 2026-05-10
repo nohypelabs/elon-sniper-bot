@@ -109,6 +109,13 @@ class ElonSniper {
       onResume:        () => { this.paused = false; logger.info('▶ Bot resumed via Telegram'); },
       getBalance:      () => this.getBalanceMessage(),
       getPnl:          () => this.getPnlMessage(),
+      onSetMode:       async (paper: boolean) => {
+        const oldMode = CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE';
+        const newMode = paper ? 'PAPER' : 'LIVE';
+        logger.info(`🔄 Mode switch: ${oldMode} → ${newMode}`);
+        await logEvent('MODE_CHANGE', `Mode changed from ${oldMode} to ${newMode}`);
+        CONFIG.PAPER_TRADING = paper;
+      },
     });
     telegram.startPolling();
 

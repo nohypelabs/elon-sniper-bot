@@ -316,6 +316,75 @@ function WalletDropdown() {
   )
 }
 
+// ─── Period Stats Cards Component ───────────────────────────
+
+function PeriodStatsCards({ period }: { period: '1d' | '7d' | '30d' | 'all' }) {
+  const [stats, setStats] = useState<Record<string, { pnlSol: number; winRate: number; total: number }>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchAllPeriods = async () => {
+      setLoading(true);
+      try {
+        const periods: ('1d' | '7d' | '30d' | 'all')[] = ['1d', '7d', '30d', 'all'];
+        const results = await Promise.all(
+          periods.map(p => fetch(`/api/stats?period=${p}`).then(r => r.json()))
+        );
+
+        const statsMap: Record<string, { pnlSol: number; winRate: number; total: number }> = {};
+        periods.forEach((p, i) => {
+          const r = results[i];
+          statsMap[p] = {
+            pnlSol: r.totalPnlSol || 0,
+            winRate: r.winRate || 0,
+            total: r.total || 0,
+          };
+        });
+        setStats(statsMap);
+      } catch (err) {
+        console.error('Failed to fetch period stats:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAllPeriods();
+  }, []);
+
+  const periods = [
+    { key: '1d' as const, label: '1 Day' },
+    { key: '7d' as const, label: '7 Days' },
+    { key: '30d' as const, label: '30 Days' },
+    { key: 'all' as const, label: 'All Time' },
+  ];
+
+  if (loading) {
+    return <div className="text-center py-4 text-slate-600 text-sm">Loading stats...</div>;
+  }
+
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {periods.map(({ key, label }) => {
+        const s = stats[key];
+        if (!s) return null;
+        return (
+          <div key={key} className={`bg-slate-800/50 border rounded-lg p-3 ${
+            period === key ? 'border-violet-600' : 'border-slate-800'
+          }`}>
+            <div className="text-xs text-slate-500 mb-1">{label}</div>
+            <div className={`text-lg font-bold ${pnlColor(s.pnlSol)}`}>
+              {s.pnlSol >= 0 ? '+' : ''}{s.pnlSol.toFixed(3)} SOL
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              WR: {s.winRate.toFixed(1)}% | {s.total} trades
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Header: Mode Toggle ──────────────────────────────────────────
 
 function ModeToggle({ mode }: { mode: 'PAPER' | 'LIVE' }) {
@@ -335,7 +404,7 @@ function ModeToggle({ mode }: { mode: 'PAPER' | 'LIVE' }) {
     await fetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ PAPER_TRADING: mode === 'LIVE' }),
+      body: JSON.stringify({ PAPER_TRADING: mode === 'PAPER' }),
     })
     setConfirming(false)
   }
@@ -538,9 +607,9 @@ export default function App() {
   }, [state.buysExecuted])
 
   useEffect(() => {
-    fetch(`/api/pnl?period=${period}`).then(r => r.json()).then(setPnlData)
-    fetch(`/api/stats?period=${period}`).then(r => r.json()).then(setStats)
-  }, [period, state.buysExecuted])
+    fetch(`/api/pnl?period=${period}&mode=${state.mode}`).then(r => r.json()).then(setPnlData)
+    fetch(`/api/stats?period=${period}&mode=${state.mode}`).then(r => r.json()).then(setStats)
+  }, [period, state.buysExecuted, state.mode])
 
   const totalPnlSol = stats?.totalPnlSol ?? (pnlData.at(-1)?.cumulative ?? 0)
   const totalPnlUsd = totalPnlSol * (state.solPriceUsd || 0)
@@ -643,6 +712,12 @@ export default function App() {
         <MiniStat label="Uptime" value={fmtUptime(state.uptime)} icon={<Clock size={12} />} />
         <MiniStat label="Active" value={state.activePositions.length.toString()} icon={<Activity size={12} />} />
         <MiniStat label="Buys"   value={state.buysExecuted.toString()} icon={<ShoppingCart size={12} />} />
+      </div>
+
+      {/* Period PnL Stats - All periods at once */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <h3 className="text-sm font-semibold text-slate-300 mb-3">PnL by Period</h3>
+        <PeriodStatsCards period={period} />
       </div>
 
       {/* PnL Chart — always visible */}
