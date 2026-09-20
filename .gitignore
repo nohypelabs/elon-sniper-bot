@@ -2,6 +2,16 @@ node_modules/
 dist/
 .env
 *.log
-data/
 /.docdex/
 /.docdex-state/
+*.db
+*.db-journal
+prisma/dev.db
+
+# Runtime data. The example wallet list is the only tracked file in here —
+# a negation only works because the directory itself isn't excluded.
+data/*
+!data/whale-wallets.example.json
+
+# Private wallet lists (Axiom exports, alpha watchlists)
+wallet-tracker.txt
