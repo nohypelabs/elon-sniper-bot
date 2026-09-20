@@ -1,0 +1,18 @@
+[
+  {
+    "address": "So11111111111111111111111111111111111111112",
+    "name": "Example whale A",
+    "emoji": "🐳",
+    "priority": true
+  },
+  {
+    "address": "11111111111111111111111111111111",
+    "name": "Example whale B",
+    "emoji": "🐋",
+    "priority": true
+  },
+  {
+    "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "name": "Example watchlist-only wallet"
+  }
+]
