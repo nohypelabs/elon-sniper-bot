@@ -170,6 +170,21 @@ class ElonSniper {
       return;
     }
 
+    // Mark position as pending to prevent race conditions
+    this.activePositions.set(token.mint, {
+      token: null as any,
+      buyResult: null as any,
+      entryTime: Date.now(),
+      entryPriceUsd: 0,
+      currentPriceUsd: 0,
+      solSpent: 0,
+      remainingTokens: 0,
+      tp1Hit: false,
+      tp2Hit: false,
+      isSelling: true, // Lock while buying
+      tweetText: `PumpFun snipe: ${token.name}`,
+    });
+
     logger.info(`🎯 PumpFun snipe candidate: ${token.symbol} (${token.mint.slice(0, 8)}) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL`);
 
     await logEvent('TOKEN_FOUND', `PumpFun: ${token.symbol} | dev ${token.initialBuySol} SOL | mcap ${token.marketCapSol} SOL`, {
@@ -330,16 +345,22 @@ class ElonSniper {
   private async executeBuy(token: FoundToken, tweetText?: string): Promise<void> {
     if (this.paused) {
       logger.warn(`Buy skipped while paused: ${token.symbol}`);
+      // Remove pending position if exists
+      if (this.activePositions.has(token.mintAddress)) {
+        this.activePositions.delete(token.mintAddress);
+      }
       return;
     }
 
     const solAmount = CONFIG.BUY_AMOUNT_SOL;
+    const isPendingPosition = this.activePositions.has(token.mintAddress);
 
     if (!CONFIG.PAPER_TRADING) {
       const sec = await this.gmgnSwap.checkTokenSecurity(token.mintAddress);
       if (sec.isHoneypot) {
         await logEvent('ERROR', `Honeypot detected: ${token.symbol}`, { mint: token.mintAddress });
         await telegram.alertError(`🚫 Skipped ${token.symbol}: HONEYPOT`);
+        if (isPendingPosition) this.activePositions.delete(token.mintAddress);
         return;
       }
       if (sec.risks.length > 0) {
@@ -359,13 +380,14 @@ class ElonSniper {
     if (!result.success) {
       await logEvent('ERROR', `Buy failed: ${token.symbol} — ${result.error}`);
       await telegram.alertError(`Buy ${token.symbol} failed: ${result.error}`);
+      if (isPendingPosition) this.activePositions.delete(token.mintAddress);
       return;
     }
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' :
                    CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
-    this.activePositions.set(token.mintAddress, {
+    const positionData = {
       token,
       buyResult: result,
       entryTime: Date.now(),
@@ -377,7 +399,9 @@ class ElonSniper {
       tp2Hit: false,
       isSelling: false,
       tweetText,
-    });
+    };
+
+    this.activePositions.set(token.mintAddress, positionData);
     this.buysExecuted++;
 
     // Persist to DB
@@ -420,6 +444,15 @@ class ElonSniper {
   private async executePartialSell(mint: string, position: ActivePosition, sellPercent: number, reason: string): Promise<void> {
     const tokensToSell = Math.floor(position.remainingTokens * (sellPercent / 100));
     if (tokensToSell <= 0) return;
+
+    // Fetch current price for accurate PnL calculation (especially for timeout sells)
+    if (reason === 'max-hold-5min' || reason === 'max-hold-loss-5min') {
+      const currentPrice = await this.fetchCurrentPriceForPnL(mint);
+      if (currentPrice > 0) {
+        position.currentPriceUsd = currentPrice;
+        logger.info(`📊 Fetched current price for ${position.token.symbol}: $${currentPrice.toExponential(3)}`);
+      }
+    }
 
     logger.info(`💰 PARTIAL SELL ${sellPercent}%: ${position.token.symbol} | ${tokensToSell} tokens | reason: ${reason}`);
 
@@ -466,8 +499,32 @@ class ElonSniper {
     broadcastState();
   }
 
+  private async fetchCurrentPriceForPnL(mint: string): Promise<number> {
+    try {
+      const { default: axios } = await import('axios');
+      const resp = await axios.get(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, {
+        timeout: 5000,
+        headers: { 'User-Agent': 'elon-sniper-bot/1.0' }
+      });
+      const pair = resp.data?.pairs?.[0];
+      if (pair?.priceUsd) {
+        return parseFloat(pair.priceUsd);
+      }
+    } catch { /* ignore */ }
+    return 0;
+  }
+
   private async executeSell(mint: string, position: ActivePosition, reason: string): Promise<void> {
     this.pumpListener.unsubscribeFromTrades(mint);
+
+    // Fetch current price for accurate PnL calculation
+    if (reason === 'max-hold-5min' || reason === 'max-hold-loss-5min') {
+      const currentPrice = await this.fetchCurrentPriceForPnL(mint);
+      if (currentPrice > 0) {
+        position.currentPriceUsd = currentPrice;
+        logger.info(`📊 Fetched current price for ${position.token.symbol}: $${currentPrice.toExponential(3)}`);
+      }
+    }
 
     let result = CONFIG.GMGN_API_KEY
       ? await this.gmgnSwap.sellToken(mint, position.remainingTokens || undefined)
@@ -694,6 +751,9 @@ class ElonSniper {
         ? ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100
         : 0;
       const pnlSol = pnlPercent / 100 * pos.solSpent;
+
+      // Skip pending positions (not yet bought)
+      if (!pos.token || !pos.buyResult) continue;
 
       const currentMcapUsd = pos.entryPriceUsd > 0
         ? pos.token.mcapUsd * (pos.currentPriceUsd / pos.entryPriceUsd)

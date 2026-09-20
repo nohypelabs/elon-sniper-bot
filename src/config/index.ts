@@ -7,6 +7,7 @@ export const CONFIG = {
     ? `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`
     : (process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com'),
   WALLET_PRIVATE_KEY: process.env.WALLET_PRIVATE_KEY || '',
+  HELIUS_API_KEY: process.env.HELIUS_API_KEY || '',
 
   // Sniper
   BUY_AMOUNT_SOL: parseFloat(process.env.BUY_AMOUNT_SOL || '0.5'),
@@ -46,7 +47,6 @@ export const CONFIG = {
   PUMP_MIN_MCAP_SOL:    parseFloat(process.env.PUMP_MIN_MCAP_SOL || '0'),
   PUMP_MAX_MCAP_SOL:    parseFloat(process.env.PUMP_MAX_MCAP_SOL || '50'),
   PUMP_MIN_VOLUME_SOL:  parseFloat(process.env.PUMP_MIN_VOLUME_SOL || '1.2'), // real SOL in curve = mcap - 30
-  PUMP_MAX_POSITIONS:   parseInt(process.env.PUMP_MAX_POSITIONS || '3'),
   PUMP_SECURITY_CHECK:  process.env.PUMP_SECURITY_CHECK !== 'false',
   PUMP_FAST_MODE:       process.env.PUMP_FAST_MODE === 'true', // buy first, check after
   PUMP_BLOCK_MAYHEM:    process.env.PUMP_BLOCK_MAYHEM !== 'false',
@@ -62,6 +62,19 @@ export const CONFIG = {
   PUMP_MAX_HOLD_MINUTES: parseInt(process.env.PUMP_MAX_HOLD_MINUTES || '30'),
   PUMP_MAX_HOLD_LOSS_MINUTES: parseInt(process.env.PUMP_MAX_HOLD_LOSS_MINUTES || '5'),
   PUMP_SOL_PRICE_USD: parseFloat(process.env.PUMP_SOL_PRICE_USD || '150'),
+
+  // Dev wallet history check (Helius API)
+  PUMP_DEV_WALLET_CHECK:     process.env.PUMP_DEV_WALLET_CHECK === 'true',
+  PUMP_MAX_LAUNCHES_24H:     parseInt(process.env.PUMP_MAX_LAUNCHES_24H || '3'),
+  PUMP_DEV_CHECK_TIMEOUT_MS: parseInt(process.env.PUMP_DEV_CHECK_TIMEOUT_MS || '2000'),
+
+  // Token observation (pre-buy trade analysis)
+  PUMP_OBSERVE_ENABLED:    process.env.PUMP_OBSERVE_ENABLED === 'true',
+  PUMP_OBSERVE_SECONDS:    parseInt(process.env.PUMP_OBSERVE_SECONDS || '60'),
+  PUMP_MIN_UNIQUE_BUYERS:  parseInt(process.env.PUMP_MIN_UNIQUE_BUYERS || '5'),
+  PUMP_MIN_BUY_RATIO:      parseFloat(process.env.PUMP_MIN_BUY_RATIO || '0.7'),
+  PUMP_MIN_SOL_VELOCITY:   parseFloat(process.env.PUMP_MIN_SOL_VELOCITY || '0.1'),
+  PUMP_MAX_OBSERVE_TOKENS: parseInt(process.env.PUMP_MAX_OBSERVE_TOKENS || '20'),
 
   // Multi-level take profit
   TP1_PERCENT:      parseFloat(process.env.TP1_PERCENT || '30'),   // first TP

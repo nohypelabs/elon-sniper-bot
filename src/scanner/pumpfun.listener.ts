@@ -10,6 +10,8 @@
 import WebSocket from 'ws';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
+import { DevWalletChecker } from './dev-wallet.checker';
+import { TokenObserver, ObservationResult } from './token-observer';
 
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
 
@@ -47,6 +49,11 @@ export class PumpFunListener {
   // Stats
   private stats = { received: 0, passed: 0, filtered: 0 };
 
+  // Dev wallet checker (lazy-init when enabled)
+  private devWalletChecker: DevWalletChecker | null = null;
+  // Token observer for pre-buy trade observation
+  private observer: TokenObserver | null = null;
+
   onNewToken(cb: TokenCallback) {
     this.callback = cb;
   }
@@ -77,11 +84,26 @@ export class PumpFunListener {
         this.stats = { received: 0, passed: 0, filtered: 0 };
       }
     }, 30_000);
+
+    // Feature 1: Dev wallet history check
+    if (CONFIG.PUMP_DEV_WALLET_CHECK) {
+      this.devWalletChecker = new DevWalletChecker();
+      logger.info(`🔍 Dev wallet check: ON (max launches 24h: ${CONFIG.PUMP_MAX_LAUNCHES_24H})`);
+    }
+
+    // Feature 2: Token observation
+    if (CONFIG.PUMP_OBSERVE_ENABLED) {
+      this.observer = new TokenObserver();
+      this.observer.onResult((token, result) => this.handleObservationResult(token, result));
+      this.observer.start();
+      logger.info(`👁 Token observer: ON (${CONFIG.PUMP_OBSERVE_SECONDS}s window, min ${CONFIG.PUMP_MIN_UNIQUE_BUYERS} buyers, ${CONFIG.PUMP_MIN_BUY_RATIO} ratio, ${CONFIG.PUMP_MIN_SOL_VELOCITY} SOL/s)`);
+    }
   }
 
   stop() {
     this.running = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.observer) this.observer.stop();
     this.ws?.close();
   }
 
@@ -100,6 +122,14 @@ export class PumpFunListener {
         const keys = [...this.tokenSubs.keys()];
         this.ws!.send(JSON.stringify({ method: 'subscribeTokenTrade', keys }));
         logger.info(`📡 Re-subscribed to ${keys.length} token trade feed(s)`);
+      }
+      // Re-subscribe to observed tokens
+      if (this.observer && this.observer.size() > 0) {
+        const observedMints = this.observer.getMints();
+        if (observedMints.length > 0) {
+          this.ws!.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: observedMints }));
+          logger.info(`👁 Re-subscribed to ${observedMints.length} observed token(s)`);
+        }
       }
     });
 
@@ -129,12 +159,22 @@ export class PumpFunListener {
   // ─── Message handler ──────────────────────────────────────────
 
   private async handleMessage(msg: any) {
-    // Real-time price update for a subscribed token
-    if (msg.mint && (msg.txType === 'buy' || msg.txType === 'sell') && this.tokenSubs.has(msg.mint)) {
-      const vSol    = parseFloat(msg.vSolInBondingCurve) || 0;
-      const vTokens = parseFloat(msg.vTokensInBondingCurve) || 1;
-      const priceInSol = vTokens > 0 ? vSol / vTokens : 0;
-      this.tokenSubs.get(msg.mint)!(priceInSol);
+    // Trade event (buy/sell) handling
+    if (msg.mint && (msg.txType === 'buy' || msg.txType === 'sell')) {
+      // Real-time price update for a subscribed (bought) token
+      if (this.tokenSubs.has(msg.mint)) {
+        const vSol    = parseFloat(msg.vSolInBondingCurve) || 0;
+        const vTokens = parseFloat(msg.vTokensInBondingCurve) || 1;
+        const priceInSol = vTokens > 0 ? vSol / vTokens : 0;
+        this.tokenSubs.get(msg.mint)!(priceInSol);
+      }
+
+      // Route to observer for tokens under observation
+      if (this.observer && this.observer.has(msg.mint)) {
+        const solAmount = parseFloat(msg.solAmount) || 0;
+        this.observer.onTrade(msg.mint, msg.txType, msg.traderPublicKey || '', solAmount);
+      }
+
       return;
     }
 
@@ -202,6 +242,37 @@ export class PumpFunListener {
       return;
     }
 
+    // Feature 1: Dev wallet history check
+    if (this.devWalletChecker) {
+      const devCheck = await this.devWalletChecker.check(token.creatorWallet);
+      if (!devCheck.isSafe) {
+        this.stats.filtered++;
+        logger.info(`⏭ [${this.stats.received}] ${token.symbol} filtered: dev wallet — ${devCheck.reason} (launches: ${devCheck.launchCount24h}, rugs: ${devCheck.priorRugCount})`);
+        return;
+      }
+      if (devCheck.launchCount24h > 0) {
+        logger.info(`🔍 Dev ${token.creatorWallet.slice(0, 8)}... — launches: ${devCheck.launchCount24h}, rugs: ${devCheck.priorRugCount}`);
+      }
+    }
+
+    // Feature 2: Token observation instead of immediate buy
+    if (this.observer) {
+      const registered = this.observer.register(token);
+      if (registered) {
+        this.stats.passed++;
+        this.recentMints.set(token.mint, Date.now());
+        this.recentCreators.set(token.creatorWallet, Date.now());
+        logger.info(`👁 [${this.stats.received}] ${token.symbol} → observation (${CONFIG.PUMP_OBSERVE_SECONDS}s) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL`);
+        // Subscribe to trade events for observed token
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [token.mint] }));
+        }
+        return;
+      }
+      // Observer at capacity — fall through to immediate callback
+      logger.debug(`Observer at capacity — emitting ${token.symbol} immediately`);
+    }
+
     this.stats.passed++;
 
     // Mark as seen
@@ -218,6 +289,25 @@ export class PumpFunListener {
   }
 
   // ─── Filter logic ─────────────────────────────────────────────
+
+  private async handleObservationResult(token: NewPumpToken, result: ObservationResult): Promise<void> {
+    // Unsubscribe from trade events for this observed token
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [token.mint] }));
+    }
+
+    if (result.passed) {
+      logger.info(`✅ Observation passed: ${token.symbol} — ${result.uniqueBuyers} buyers, ${(result.buyRatio * 100).toFixed(0)}% ratio, ${result.solVelocity.toFixed(3)} SOL/s`);
+      if (this.callback) {
+        await this.callback(token).catch(err =>
+          logger.error(`PumpFun callback error (observer): ${err.message}`),
+        );
+      }
+    } else {
+      this.stats.filtered++;
+      logger.info(`⏭ Observation failed: ${token.symbol} — ${result.reason}`);
+    }
+  }
 
   private filter(token: NewPumpToken): string | null {
     const cleanName = (token.name || '').trim();
@@ -295,6 +385,9 @@ export class PumpFunListener {
     }
     for (const [k, t] of this.recentCreators) {
       if (now - t > CONFIG.PUMP_CREATOR_COOLDOWN_MS * 2) this.recentCreators.delete(k);
+    }
+    if (this.devWalletChecker) {
+      this.devWalletChecker.prune();
     }
   }
 }
