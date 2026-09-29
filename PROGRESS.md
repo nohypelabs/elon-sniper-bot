@@ -196,21 +196,14 @@ pkill -f "tsx src/index.ts"
 
 ## Pending / Next Session
 
-### High
-- [x] **Symbol dedup** — skip buying same symbol if already holding (e.g. 3x CHARLIE)
-- [ ] **Cloudflare Tunnel** — HTTPS access to dashboard from outside VPS
-
-### Medium
-- [ ] **CT whale monitor** — snipe from big CT accounts (Murad, cobie, etc.) not just Elon
-- [ ] **Trailing TP** — raise SL as price climbs (vs fixed breakeven after TP1)
-- [x] **SOL price oracle** — Jupiter price API, updates every 60s, fallback ke env value
-
-### Low
-- [ ] Dashboard basic auth (for Cloudflare Tunnel)
-- [ ] Export CSV from History tab
-- [ ] Telegram inline approve/reject before executing buy
-
----
+### Done (2026-09-30)
+- [x] **Cloudflare Tunnel** — Telegram `/tunnel`; refused unless `DASHBOARD_PASSWORD` is set
+- [x] **Dashboard basic auth** — `DASHBOARD_USER` / `DASHBOARD_PASSWORD` in .env (HTTP + `/ws`)
+- [x] **CT whale monitor** — Tier 2 accounts in `tweet.monitor.ts` + `scanner/whale-tracker.ts`
+- [x] **Trailing TP** — `TRAILING_TP_ENABLED`, `TRAILING_TP_DROP_PERCENT` (after TP1 the rest rides; exit at peak - drop, floor breakeven)
+- [x] **Export CSV** — History tab
+- [x] **Telegram approve/reject** — `BUY_APPROVAL_ENABLED`, `BUY_APPROVAL_TIMEOUT_SEC` (timeout = reject)
+- [x] **Telegram config** — `/set <name> <value>`, `/preset lowrisk`, `/config`
 
 ## Known Behaviors (Not Bugs)
 

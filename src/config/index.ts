@@ -28,6 +28,10 @@ export const CONFIG = {
   // Paper
   PAPER_TRADING: process.env.PAPER_TRADING !== 'false',
 
+  // Dashboard auth (HTTP Basic). Empty password = auth disabled.
+  DASHBOARD_USER:     process.env.DASHBOARD_USER || 'admin',
+  DASHBOARD_PASSWORD: process.env.DASHBOARD_PASSWORD || '',
+
   // Telegram
   TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
   TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
@@ -82,6 +86,15 @@ export const CONFIG = {
   TP2_PERCENT:      parseFloat(process.env.TP2_PERCENT || '80'),   // second TP — sell all
   MOONBAG_ENABLED:  process.env.MOONBAG_ENABLED !== 'false',
   MOONBAG_PERCENT:  parseFloat(process.env.MOONBAG_PERCENT || '15'),
+
+  // Trailing TP: after TP1 the rest rides (no fixed TP2) and exits when price
+  // falls TRAILING_TP_DROP_PERCENT points below its peak PnL (floor: breakeven).
+  TRAILING_TP_ENABLED:      process.env.TRAILING_TP_ENABLED === 'true',
+  TRAILING_TP_DROP_PERCENT: parseFloat(process.env.TRAILING_TP_DROP_PERCENT || '15'),
+
+  // Ask on Telegram (Buy/Reject buttons) before each auto-snipe buy.
+  BUY_APPROVAL_ENABLED:    process.env.BUY_APPROVAL_ENABLED === 'true',
+  BUY_APPROVAL_TIMEOUT_SEC: parseInt(process.env.BUY_APPROVAL_TIMEOUT_SEC || '20'),
 };
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';

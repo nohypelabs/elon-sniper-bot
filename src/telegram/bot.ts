@@ -5,6 +5,9 @@
  *   /sniper    - Show sniper status & active positions
  *   /sell      - Sell current position
  *   /config    - Show current config
+ *   /set       - Change config at runtime (persists to .env)
+ *   /preset    - Apply a config preset (e.g. lowrisk)
+ *   Buy approval: BUY_APPROVAL_ENABLED=true asks Approve/Reject before each snipe
  *   /help      - Show commands
  *
  * Alerts:
@@ -18,6 +21,7 @@ import axios, { AxiosError } from 'axios';
 import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
+import { EDITABLE_CONFIG, CONFIG_ALIASES, PRESETS, resolveKey, parseValue, applyConfig } from '../config/editable';
 import { FoundToken } from '../scanner/token.finder';
 
 const API = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}`;
@@ -51,6 +55,10 @@ let tunnelProcess: ChildProcess | null = null;
 async function startTunnel(): Promise<string> {
   if (tunnelProcess) {
     return '⚠️ Tunnel sudah berjalan. Kirim /tunnel stop dulu.';
+  }
+
+  if (!CONFIG.DASHBOARD_PASSWORD) {
+    return '🔒 Tunnel ditolak: <code>DASHBOARD_PASSWORD</code> belum diset di .env. Dashboard bisa ganti wallet dan config, jadi jangan dibuka ke internet tanpa password.';
   }
 
   const dashboardPort = process.env.DASHBOARD_PORT || process.env.PORT || '3001';
@@ -273,6 +281,42 @@ export async function alertError(message: string): Promise<void> {
   await send(`❌ <b>Error:</b> ${escapeHtml(message)}`);
 }
 
+// ─── Buy approval (Approve/Reject before auto-snipe) ──────────────
+
+const pendingApprovals = new Map<string, (approved: boolean) => void>();
+let approvalSeq = 0;
+
+/**
+ * Ask on Telegram whether to buy. Resolves true only on an explicit Approve;
+ * Reject, timeout, or a failed send all resolve false (fail closed).
+ */
+export async function requestBuyApproval(summary: string, timeoutSec: number): Promise<boolean> {
+  const id = String(++approvalSeq);
+  const sent = await sendWithButtons(
+    [`🕹 <b>Approve buy?</b>`, summary, '', `⏳ Auto-reject dalam ${timeoutSec}s`].join('\n'),
+    [[
+      { text: `✅ BUY ${CONFIG.BUY_AMOUNT_SOL} SOL`, callback_data: `appr:yes:${id}` },
+      { text: '❌ Reject', callback_data: `appr:no:${id}` },
+    ]],
+  );
+  if (!sent) {
+    logger.warn('Buy approval requested but Telegram send failed — rejecting');
+    return false;
+  }
+
+  return new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => {
+      pendingApprovals.delete(id);
+      resolve(false);
+    }, timeoutSec * 1000);
+    pendingApprovals.set(id, approved => {
+      clearTimeout(timer);
+      pendingApprovals.delete(id);
+      resolve(approved);
+    });
+  });
+}
+
 // ─── Command handlers ──────────────────────────────────────────────
 
 type BuyCallback = (mintAddress: string, symbol: string) => Promise<void>;
@@ -389,7 +433,21 @@ async function pollLoop(): Promise<void> {
             `🤖 Auto Sell: ${CONFIG.AUTO_SELL ? 'ON' : 'OFF'}`,
             `📝 Mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`,
             `⏱ Poll Interval: ${CONFIG.TWEET_POLL_INTERVAL_MS / 1000}s`,
+            '',
+            `<b>PumpFun</b>`,
+            `📦 Max Posisi: ${CONFIG.PUMP_MAX_POSITIONS}`,
+            `⌛ Max Hold: ${CONFIG.PUMP_MAX_HOLD_MINUTES} menit`,
+            `👨‍💻 Min Dev Buy: ${CONFIG.PUMP_MIN_DEV_BUY_SOL} SOL`,
+            `🔒 Security Check: ${CONFIG.PUMP_SECURITY_CHECK ? 'ON' : 'OFF'}`,
+            `📈 Trailing TP: ${CONFIG.TRAILING_TP_ENABLED ? `ON (drop ${CONFIG.TRAILING_TP_DROP_PERCENT}%)` : 'OFF'}`,
+            `🕹 Approval Buy: ${CONFIG.BUY_APPROVAL_ENABLED ? `ON (${CONFIG.BUY_APPROVAL_TIMEOUT_SEC}s)` : 'OFF'}`,
+            '',
+            `Ubah: /set &lt;nama&gt; &lt;nilai&gt; atau /preset lowrisk`,
           ].join('\n'));
+        } else if (text === '/set' || text.startsWith('/set ')) {
+          await send(handleSet(text.split(/\s+/).slice(1)));
+        } else if (text === '/preset' || text.startsWith('/preset ')) {
+          await send(handlePreset(text.split(/\s+/)[1]));
         } else if (text === '/help') {
           await send([
             `🤖 <b>Elon Sniper Bot</b>`,
@@ -405,7 +463,9 @@ async function pollLoop(): Promise<void> {
             `/paper - Switch ke PAPER mode`,
             `/tunnel - Start dashboard tunnel`,
             `/tunnel stop - Stop tunnel`,
-            `/config - Konfigurasi`,
+            `/config - Lihat konfigurasi`,
+            `/set &lt;nama&gt; &lt;nilai&gt; - Ubah konfigurasi (tanpa buka .env)`,
+            `/preset lowrisk - Terapkan mode low risk`,
             `/help - Pesan ini`,
           ].join('\n'));
         }
@@ -419,6 +479,18 @@ async function pollLoop(): Promise<void> {
 async function handleCallback(cbQuery: any): Promise<void> {
   const data: string = cbQuery.data ?? '';
   const cbId: string = cbQuery.id;
+
+  if (data.startsWith('appr:')) {
+    const [, choice, id] = data.split(':');
+    const resolve = pendingApprovals.get(id);
+    if (!resolve) {
+      await answerCb(cbId, 'Kadaluarsa — sudah di-reject otomatis');
+      return;
+    }
+    await answerCb(cbId, choice === 'yes' ? 'Buying...' : 'Rejected');
+    resolve(choice === 'yes');
+    return;
+  }
 
   if (data.startsWith('buy:')) {
     const parts = data.split(':');
@@ -445,6 +517,45 @@ async function answerCb(id: string, text?: string): Promise<void> {
   try {
     await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: id, text: text ?? '' });
   } catch { /* non-critical */ }
+}
+
+// ─── Config editing ───────────────────────────────────────────────
+
+function fmtVal(v: unknown): string {
+  return typeof v === 'boolean' ? (v ? 'ON' : 'OFF') : String(v);
+}
+
+function handleSet(args: string[]): string {
+  if (args.length < 2) {
+    const aliases = Object.entries(CONFIG_ALIASES).map(([a, k]) => `• <code>${a}</code> → ${k} (${fmtVal((CONFIG as any)[k])})`);
+    return [
+      `⚙️ <b>Cara pakai:</b> /set &lt;nama&gt; &lt;nilai&gt;`,
+      `Contoh: <code>/set buy 0.25</code>, <code>/set security on</code>`,
+      '',
+      ...aliases,
+      '',
+      `Atau nama env lengkap: ${EDITABLE_CONFIG.join(', ')}`,
+    ].join('\n');
+  }
+
+  const key = resolveKey(args[0]);
+  if (!key) return `❌ Nama tidak dikenal: ${escapeHtml(args[0])}. Kirim /set untuk daftar.`;
+
+  const value = parseValue(key, args[1]);
+  if (typeof value === 'string') return `❌ ${escapeHtml(value)}`;
+
+  const before = (CONFIG as any)[key];
+  applyConfig({ [key]: value });
+  return `✅ <b>${key}</b>: ${fmtVal(before)} → ${fmtVal(value)}`;
+}
+
+function handlePreset(name?: string): string {
+  const preset = name ? PRESETS[name.toLowerCase()] : undefined;
+  if (!preset) return `Preset tersedia: ${Object.keys(PRESETS).join(', ')}\nContoh: /preset lowrisk`;
+
+  const lines = Object.entries(preset).map(([k, v]) => `• ${k}: ${fmtVal((CONFIG as any)[k])} → ${fmtVal(v)}`);
+  applyConfig(preset as Record<string, number | boolean>);
+  return [`✅ <b>Preset ${escapeHtml(name!)} diterapkan</b>`, ...lines].join('\n');
 }
 
 // ─── Utilities ────────────────────────────────────────────────────

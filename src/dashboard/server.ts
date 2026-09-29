@@ -8,11 +8,28 @@ import { db } from '../db/client';
 import { logger } from '../utils/logger';
 import { runBacktest } from '../backtest/runner';
 import { CONFIG } from '../config';
+import { EDITABLE_CONFIG, applyConfig } from '../config/editable';
 import path from 'path';
 import fs from 'fs';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
+import { timingSafeEqual } from 'crypto';
 import { encryptKey, decryptKey } from '../utils/wallet.crypto';
+
+function safeEqual(a: string, b: string): boolean {
+  const ba = Buffer.from(a), bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
+/** True if the Authorization header carries valid Basic credentials (or auth is disabled). */
+function isAuthorized(header: string | undefined): boolean {
+  if (!CONFIG.DASHBOARD_PASSWORD) return true;
+  if (!header?.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString();
+  const i = decoded.indexOf(':');
+  if (i < 0) return false;
+  return safeEqual(decoded.slice(0, i), CONFIG.DASHBOARD_USER) && safeEqual(decoded.slice(i + 1), CONFIG.DASHBOARD_PASSWORD);
+}
 
 const DASHBOARD_PORT = parseInt(process.env.PORT || process.env.DASHBOARD_PORT || '3001');
 
@@ -93,6 +110,11 @@ export async function startDashboardServer() {
   const app = new Hono();
 
   app.use('*', cors({ origin: '*' }));
+
+  app.use('*', async (c, next) => {
+    if (isAuthorized(c.req.header('authorization'))) return next();
+    return c.text('Unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="Elon Sniper"' });
+  });
 
   app.get('/api/status', c => c.json(botStateGetter()));
 
@@ -221,17 +243,6 @@ export async function startDashboardServer() {
 
   // ─── Config endpoints ─────────────────────────────────────────────
 
-  const EDITABLE_CONFIG = [
-    'BUY_AMOUNT_SOL', 'MAX_SLIPPAGE_BPS', 'STOP_LOSS_PERCENT',
-    'TP1_PERCENT', 'TP1_SELL_PERCENT', 'TP2_PERCENT',
-    'MOONBAG_PERCENT',
-    'PRIORITY_FEE_BUY_SOL', 'PRIORITY_FEE_SELL_SOL', 'MAX_FEE_SOL',
-    'PUMP_MAX_POSITIONS', 'PUMP_MAX_HOLD_MINUTES',
-    'PUMP_MIN_DEV_BUY_SOL', 'PUMP_MAX_DEV_BUY_SOL',
-    'PUMP_MIN_MCAP_SOL', 'PUMP_MAX_MCAP_SOL',
-    'AUTO_SELL', 'ANTI_MEV', 'MOONBAG_ENABLED',
-  ] as const;
-
   app.get('/api/config', c => {
     const out: Record<string, unknown> = {};
     for (const k of EDITABLE_CONFIG) out[k] = (CONFIG as any)[k];
@@ -241,39 +252,15 @@ export async function startDashboardServer() {
 
   app.post('/api/config', async c => {
     const body = await c.req.json().catch(() => ({}));
-    const updated: Record<string, string> = {};
+    const updated: Record<string, number | boolean> = {};
 
     for (const key of [...EDITABLE_CONFIG, 'PAPER_TRADING'] as string[]) {
       if (!(key in body)) continue;
       const val = body[key];
-      // Update in-memory CONFIG
-      if (typeof val === 'boolean') {
-        (CONFIG as any)[key] = val;
-        updated[key] = String(val);
-      } else if (typeof val === 'number') {
-        (CONFIG as any)[key] = val;
-        updated[key] = String(val);
-      }
+      if (typeof val === 'boolean' || typeof val === 'number') updated[key] = val;
     }
 
-    // Patch .env file for persistence
-    try {
-      const envPath = path.join(process.cwd(), '.env');
-      let content = fs.readFileSync(envPath, 'utf8');
-      for (const [key, val] of Object.entries(updated)) {
-        const re = new RegExp(`^(${key}\\s*=)[^\\n]*`, 'm');
-        if (re.test(content)) {
-          content = content.replace(re, `$1${val}`);
-        } else {
-          content += `\n${key}=${val}`;
-        }
-      }
-      fs.writeFileSync(envPath, content);
-    } catch (e) {
-      logger.warn('Could not write .env: ' + e);
-    }
-
-    logger.info(`⚙ Config updated: ${Object.keys(updated).join(', ')}`);
+    applyConfig(updated);
     return c.json({ ok: true, updated });
   });
 
@@ -385,7 +372,12 @@ export async function startDashboardServer() {
     }
   });
 
-  wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  wss = new WebSocketServer({
+    server: httpServer,
+    path: '/ws',
+    verifyClient: ({ req }: { req: IncomingMessage }) => isAuthorized(req.headers.authorization),
+  });
+  if (!CONFIG.DASHBOARD_PASSWORD) logger.warn('DASHBOARD_PASSWORD not set — dashboard is open (tunnel will be refused)');
   wss.on('connection', ws => {
     ws.send(JSON.stringify({ type: 'state', data: botStateGetter() }));
     ws.on('error', () => {});
