@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { serve } from '@hono/node-server';
+import { getRequestListener } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { createServer, IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { db } from '../db/client';
 import { logger } from '../utils/logger';
@@ -13,23 +13,9 @@ import path from 'path';
 import fs from 'fs';
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { timingSafeEqual } from 'crypto';
 import { encryptKey, decryptKey } from '../utils/wallet.crypto';
-
-function safeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a), bb = Buffer.from(b);
-  return ba.length === bb.length && timingSafeEqual(ba, bb);
-}
-
-/** True if the Authorization header carries valid Basic credentials (or auth is disabled). */
-function isAuthorized(header: string | undefined): boolean {
-  if (!CONFIG.DASHBOARD_PASSWORD) return true;
-  if (!header?.startsWith('Basic ')) return false;
-  const decoded = Buffer.from(header.slice(6), 'base64').toString();
-  const i = decoded.indexOf(':');
-  if (i < 0) return false;
-  return safeEqual(decoded.slice(0, i), CONFIG.DASHBOARD_USER) && safeEqual(decoded.slice(i + 1), CONFIG.DASHBOARD_PASSWORD);
-}
+import { isAuthorized, unauthorizedResponseHeaders } from './auth';
+import { isOriginAllowed, parseAllowedOrigins } from './origin-guard';
 
 const DASHBOARD_PORT = parseInt(process.env.PORT || process.env.DASHBOARD_PORT || '3001');
 
@@ -109,11 +95,35 @@ export function broadcastState() {
 export async function startDashboardServer() {
   const app = new Hono();
 
-  app.use('*', cors({ origin: '*' }));
+  // Explicitly allowed cross-site origins (e.g. Vite dev server). Read from
+  // process.env directly (NOT via CONFIG) so it stays a transport concern.
+  const allowedOrigins = parseAllowedOrigins(process.env.DASHBOARD_ALLOWED_ORIGINS);
+
+  // Echo back the request Origin only when it is same-host or explicitly
+  // allowed; otherwise omit Access-Control-Allow-Origin so browsers block
+  // cross-site reads. (The cors origin callback receives the context, so the
+  // Host header IS visible here — no need to drop the middleware.)
+  app.use('*', cors({
+    origin: (o, c) => (isOriginAllowed(o, c.req.header('host'), allowedOrigins) ? o : ''),
+  }));
+
+  // CSRF guard, BEFORE auth: browsers attach cached Basic credentials to
+  // cross-site form/simple POSTs, so state-changing requests must carry a
+  // same-host (or explicitly allowed) Origin. No-Origin clients (curl,
+  // server-to-server) are unaffected.
+  app.use('*', async (c, next) => {
+    const method = c.req.method;
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      if (!isOriginAllowed(c.req.header('origin'), c.req.header('host'), allowedOrigins)) {
+        return c.text('Forbidden origin', 403);
+      }
+    }
+    return next();
+  });
 
   app.use('*', async (c, next) => {
-    if (isAuthorized(c.req.header('authorization'))) return next();
-    return c.text('Unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="Elon Sniper"' });
+    if (isAuthorized(c.req.header('authorization'), CONFIG.DASHBOARD_USER, CONFIG.DASHBOARD_PASSWORD)) return next();
+    return c.text('Unauthorized', 401, unauthorizedResponseHeaders);
   });
 
   app.get('/api/status', c => c.json(botStateGetter()));
@@ -357,25 +367,18 @@ export async function startDashboardServer() {
   app.use('/*', serveStatic({ root: staticRoot }));
   app.get('*', serveStatic({ path: path.join(staticRoot, 'index.html') }));
 
-  // Create raw http server for WebSocket co-hosting
-  const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    try {
-      const honoRes = await (app.fetch(new Request(`http://localhost${req.url}`, {
-        method: req.method,
-        headers: req.headers as Record<string, string>,
-      })) as Promise<Response>);
-      res.writeHead(honoRes.status, Object.fromEntries(honoRes.headers.entries()));
-      res.end(await honoRes.text());
-    } catch {
-      res.writeHead(500);
-      res.end();
-    }
-  });
+  // HTTP handled by @hono/node-server (streams bodies, preserves binary);
+  // raw http server kept for WebSocket co-hosting on the same port.
+  const httpServer = createServer(getRequestListener((req) => app.fetch(req)));
 
   wss = new WebSocketServer({
     server: httpServer,
     path: '/ws',
-    verifyClient: ({ req }: { req: IncomingMessage }) => isAuthorized(req.headers.authorization),
+    // Browsers send Origin + cached Basic creds on the WS handshake, so an
+    // attacker page could otherwise hijack the live feed. Require both.
+    verifyClient: ({ req }: { req: IncomingMessage }) =>
+      isAuthorized(req.headers.authorization, CONFIG.DASHBOARD_USER, CONFIG.DASHBOARD_PASSWORD) &&
+      isOriginAllowed(req.headers.origin, req.headers.host, allowedOrigins),
   });
   if (!CONFIG.DASHBOARD_PASSWORD) logger.warn('DASHBOARD_PASSWORD not set — dashboard is open (tunnel will be refused)');
   wss.on('connection', ws => {
