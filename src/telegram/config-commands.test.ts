@@ -261,4 +261,19 @@ describe('renderConfig', () => {
     assert.ok(!text.includes('NaN'));
     assert.ok(!text.includes('undefined'));
   });
+
+  it('shows SOL buy line when BUY_AMOUNT_USD is 0', () => {
+    const text = renderConfig(baseConfig());
+    assert.ok(text.includes('💰 Buy Amount: 0.5 SOL'));
+    assert.ok(!text.includes('$'));
+  });
+
+  it('shows USD buy line with SOL approx when BUY_AMOUNT_USD > 0', () => {
+    const config = baseConfig();
+    config.BUY_AMOUNT_USD = 10;
+    config.PUMP_SOL_PRICE_USD = 100;
+    const text = renderConfig(config);
+    assert.ok(text.includes('💰 Buy Amount: $10 (≈ 0.1000 SOL)'));
+    assert.ok(!text.includes('NaN'));
+  });
 });

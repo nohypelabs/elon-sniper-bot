@@ -27,6 +27,9 @@ export const CONFIG = {
 
   // Paper
   PAPER_TRADING: process.env.PAPER_TRADING !== 'false',
+  PAPER_STARTING_CAPITAL_USD: parseFloat(process.env.PAPER_STARTING_CAPITAL_USD || '100'),
+  BUY_AMOUNT_USD: parseFloat(process.env.BUY_AMOUNT_USD || '0'),
+  MIN_SNIPE_USD: parseFloat(process.env.MIN_SNIPE_USD || '10'),
 
   // Dashboard auth (HTTP Basic). Empty password = auth disabled.
   DASHBOARD_USER:     process.env.DASHBOARD_USER || 'admin',

@@ -352,6 +352,35 @@ describe('tryApplyConfig: atomic .env write', () => {
   });
 });
 
+// ── BUY_AMOUNT_USD (Stage 8: paper USD sizing, editable 10..1000) ──
+
+describe('BUY_AMOUNT_USD', () => {
+  it('is editable with the buyusd alias', () => {
+    assert.ok((EDITABLE_CONFIG as readonly string[]).includes('BUY_AMOUNT_USD'));
+    assert.equal(resolveKey('buyusd'), 'BUY_AMOUNT_USD');
+    assert.equal(resolveKey('BUY_AMOUNT_USD'), 'BUY_AMOUNT_USD');
+  });
+
+  it('accepts 10..1000 and rejects 9.99 and 1001 via tryApplyConfig', () => {
+    const { envPath } = envFile('BUY_AMOUNT_USD=10\n');
+    const config: Record<string, any> = { BUY_AMOUNT_USD: 10 };
+    assert.equal(tryApplyConfig({ BUY_AMOUNT_USD: 10 }, { config, envPath }), null);
+    assert.equal(config.BUY_AMOUNT_USD, 10);
+    assert.equal(tryApplyConfig({ BUY_AMOUNT_USD: 1000 }, { config, envPath }), null);
+    assert.equal(config.BUY_AMOUNT_USD, 1000);
+    assert.match(tryApplyConfig({ BUY_AMOUNT_USD: 9.99 }, { config, envPath }) as string, /antara 10 dan 1000/);
+    assert.match(tryApplyConfig({ BUY_AMOUNT_USD: 1001 }, { config, envPath }) as string, /antara 10 dan 1000/);
+    assert.equal(config.BUY_AMOUNT_USD, 1000);
+  });
+
+  it('parseValue enforces the same bounds', () => {
+    assert.equal(parseValue('BUY_AMOUNT_USD', '10'), 10);
+    assert.equal(parseValue('BUY_AMOUNT_USD', '1000'), 1000);
+    assert.equal(typeof parseValue('BUY_AMOUNT_USD', '9.99'), 'string');
+    assert.equal(typeof parseValue('BUY_AMOUNT_USD', '1001'), 'string');
+  });
+});
+
 // ── applyConfig ──────────────────────────────────────────────────
 
 describe('applyConfig', () => {

@@ -4,7 +4,7 @@ import { CONFIG } from './index';
 import { logger } from '../utils/logger';
 
 export const EDITABLE_CONFIG = [
-  'BUY_AMOUNT_SOL', 'MAX_SLIPPAGE_BPS', 'STOP_LOSS_PERCENT',
+  'BUY_AMOUNT_SOL', 'BUY_AMOUNT_USD', 'MAX_SLIPPAGE_BPS', 'STOP_LOSS_PERCENT',
   'TP1_PERCENT', 'TP1_SELL_PERCENT', 'TP2_PERCENT',
   'MOONBAG_PERCENT',
   'PRIORITY_FEE_BUY_SOL', 'PRIORITY_FEE_SELL_SOL', 'MAX_FEE_SOL',
@@ -26,6 +26,7 @@ export interface ConfigRange { min: number; max: number }
 
 export const RANGES: Record<string, ConfigRange> = {
   BUY_AMOUNT_SOL: { min: 0.001, max: 10 },
+  BUY_AMOUNT_USD: { min: 10, max: 1000 },
   MAX_SLIPPAGE_BPS: { min: 1, max: 5000 },
   STOP_LOSS_PERCENT: { min: 1, max: 99 },
   TP1_PERCENT: { min: 1, max: 1000 },
@@ -65,6 +66,7 @@ function checkNumber(key: string, n: number): string | null {
 // Short names for Telegram: /set buy 0.25
 export const CONFIG_ALIASES: Record<string, EditableKey> = {
   buy: 'BUY_AMOUNT_SOL',
+  buyusd: 'BUY_AMOUNT_USD',
   posisi: 'PUMP_MAX_POSITIONS',
   hold: 'PUMP_MAX_HOLD_MINUTES',
   devbuy: 'PUMP_MIN_DEV_BUY_SOL',

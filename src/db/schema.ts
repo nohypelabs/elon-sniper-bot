@@ -91,6 +91,16 @@ export const latencyTraces = pgTable(
   (t) => [index('LatencyTrace_createdAt_idx').on(t.createdAt), index('LatencyTrace_kind_idx').on(t.kind)],
 );
 
+export const paperAccount = pgTable('PaperAccount', {
+  id: text('id').primaryKey().$defaultFn(() => 'main'),
+  startUsd: doublePrecision('startUsd').notNull(),
+  startSol: doublePrecision('startSol').notNull(),
+  solPriceAtStart: doublePrecision('solPriceAtStart').notNull(),
+  createdAt: timestamp('createdAt', { withTimezone: true, mode: 'date' })
+    .notNull()
+    .defaultNow(),
+});
+
 export type Trade = typeof trades.$inferSelect;
 export type NewTrade = typeof trades.$inferInsert;
 export type Position = typeof positions.$inferSelect;
@@ -99,3 +109,5 @@ export type BotEvent = typeof botEvents.$inferSelect;
 export type NewBotEvent = typeof botEvents.$inferInsert;
 export type LatencyTrace = typeof latencyTraces.$inferSelect;
 export type NewLatencyTrace = typeof latencyTraces.$inferInsert;
+export type PaperAccount = typeof paperAccount.$inferSelect;
+export type NewPaperAccount = typeof paperAccount.$inferInsert;

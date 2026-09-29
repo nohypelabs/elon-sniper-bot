@@ -15,14 +15,20 @@ import {
   listRecentSells,
   listSellSummaries,
   upsertPosition,
+  getPaperAccount,
+  createPaperAccount,
+  listPaperTradesForLedger,
 } from './db/repo';
 import {
   startDashboardServer,
+  stopDashboardServer,
   registerDashboardHandlers,
   broadcastState,
   BotState,
   ActivePositionInfo,
 } from './dashboard/server';
+import { computeBuySol } from './paper/sizing';
+import { PaperLedger } from './paper/ledger';
 import { PumpFunListener, NewPumpToken } from './scanner/pumpfun.listener';
 import { updatePeak, evaluateExit } from './strategy/exit-rules';
 import { refreshEntry } from './strategy/entry-price';
@@ -158,6 +164,10 @@ class ElonSniper {
   private solBalance = 0;
   private paused = false;
   private solPriceUsd = CONFIG.PUMP_SOL_PRICE_USD; // live-updated by oracle loop
+  private solPriceFetched = false; // true once the oracle loop fetched a price
+  private paperLedger: PaperLedger | null = null;
+  private paperAccountStartUsd = 0;
+  private lastInsufficientCapitalAlert = 0;
 
   constructor() {
     this.connection  = new Connection(CONFIG.RPC_URL, 'confirmed');
@@ -191,6 +201,12 @@ class ElonSniper {
     logger.info(`  Tweet Snipe: ON`);
     logger.info(`  PumpFun Snipe: ${CONFIG.PUMP_SNIPE_ENABLED ? 'ON' : 'OFF'}`);
     logger.info(`  Buy Amount: ${CONFIG.BUY_AMOUNT_SOL} SOL`);
+    if (CONFIG.PAPER_TRADING) {
+      const buyUsd = CONFIG.BUY_AMOUNT_USD > 0
+        ? CONFIG.BUY_AMOUNT_USD
+        : CONFIG.BUY_AMOUNT_SOL * this.solPriceUsd;
+      logger.info(`  Paper account: $${this.paperAccountStartUsd.toFixed(2)} start, buy $${buyUsd.toFixed(2)}/trade`);
+    }
     logger.info(`  Max Positions: ${CONFIG.PUMP_MAX_POSITIONS}`);
     logger.info(`  Session Risk: max loss ${CONFIG.PUMP_MAX_SESSION_LOSS_SOL} SOL | max consecutive losses ${CONFIG.PUMP_MAX_CONSECUTIVE_LOSSES}`);
     logger.info(`  TP1: +${CONFIG.TP1_PERCENT}% (sell ${CONFIG.TP1_SELL_PERCENT}%) → TP2: +${CONFIG.TP2_PERCENT}% (close) | SL: -${CONFIG.STOP_LOSS_PERCENT}%`);
@@ -545,6 +561,71 @@ class ElonSniper {
     broadcastState();
   }
 
+  // ─── Paper account ─────────────────────────────────────────
+
+  /** SOL price for anchoring a fresh paper account (never throws). */
+  private async resolvePaperStartPrice(): Promise<number> {
+    const fallback = Number.isFinite(CONFIG.PUMP_SOL_PRICE_USD) && CONFIG.PUMP_SOL_PRICE_USD > 0
+      ? CONFIG.PUMP_SOL_PRICE_USD
+      : 150;
+    try {
+      // Prefer the oracle loop's price when it already fetched one.
+      if (this.solPriceFetched && Number.isFinite(this.solPriceUsd) && this.solPriceUsd > 0) {
+        return this.solPriceUsd;
+      }
+      // Otherwise one attempt with a 5s timeout.
+      const { default: axios } = await import('axios');
+      const resp = await axios.get(
+        'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+        { timeout: 5_000, headers: { 'User-Agent': 'elon-sniper-bot/1.0' } },
+      );
+      const price = resp.data?.solana?.usd;
+      if (typeof price === 'number' && Number.isFinite(price) && price > 0) {
+        this.solPriceUsd = price;
+        return price;
+      }
+    } catch { /* ignore — fall through to fallback */ }
+    if (Number.isFinite(this.solPriceUsd) && this.solPriceUsd > 0) return this.solPriceUsd;
+    return fallback;
+  }
+
+  /**
+   * Load (or create) the singleton paper account and rebuild the ledger
+   * from persisted paper trades. No-op in LIVE mode. Never throws: on any
+   * failure falls back to an in-memory ledger so startup never crashes.
+   */
+  async initPaperLedger(): Promise<void> {
+    if (!CONFIG.PAPER_TRADING) return;
+    const fallbackPrice = Number.isFinite(CONFIG.PUMP_SOL_PRICE_USD) && CONFIG.PUMP_SOL_PRICE_USD > 0
+      ? CONFIG.PUMP_SOL_PRICE_USD
+      : 150;
+    const startUsd = Number.isFinite(CONFIG.PAPER_STARTING_CAPITAL_USD) && CONFIG.PAPER_STARTING_CAPITAL_USD > 0
+      ? CONFIG.PAPER_STARTING_CAPITAL_USD
+      : 100;
+    try {
+      const price = await this.resolvePaperStartPrice();
+      let acct = await getPaperAccount();
+      if (!acct) {
+        const startSol = startUsd / price;
+        await createPaperAccount({ startUsd, startSol, solPriceAtStart: price });
+        acct = await getPaperAccount();
+      }
+      const startSol = acct && Number.isFinite(acct.startSol) && acct.startSol > 0
+        ? acct.startSol
+        : startUsd / price;
+      this.paperAccountStartUsd = acct && Number.isFinite(acct.startUsd) && (acct.startUsd as number) > 0
+        ? (acct.startUsd as number)
+        : startUsd;
+      const paperTrades = await listPaperTradesForLedger();
+      this.paperLedger = PaperLedger.fromTrades(startSol, paperTrades);
+      logger.info(`📝 Paper account: $${this.paperAccountStartUsd.toFixed(2)} start (${startSol.toFixed(4)} SOL @ $${price.toFixed(2)}) | cash ${this.paperLedger.cashSol.toFixed(4)} SOL`);
+    } catch (err) {
+      logger.warn(`Paper ledger init failed, using in-memory fallback: ${(err as Error)?.message ?? err}`);
+      this.paperAccountStartUsd = startUsd;
+      this.paperLedger = PaperLedger.fromTrades(startUsd / fallbackPrice, []);
+    }
+  }
+
   // ─── Buy ───────────────────────────────────────────────────────
 
   private async executeBuyFromTelegram(mintAddress: string, symbol: string): Promise<void> {
@@ -569,8 +650,39 @@ class ElonSniper {
       return;
     }
 
-    const solAmount = CONFIG.BUY_AMOUNT_SOL;
+    // Position size: USD sizing when BUY_AMOUNT_USD > 0, else SOL sizing.
+    // Identical in LIVE and PAPER; a no-op for live when BUY_AMOUNT_USD is 0.
     const isPendingPosition = this.activePositions.has(token.mintAddress);
+    const sized = computeBuySol({
+      buyAmountUsd: CONFIG.BUY_AMOUNT_USD,
+      buyAmountSol: CONFIG.BUY_AMOUNT_SOL,
+      solPriceUsd: this.solPriceUsd,
+      minSnipeUsd: CONFIG.MIN_SNIPE_USD,
+    });
+    if (!sized.ok) {
+      logger.warn(`Buy skipped (${sized.reason}): ${token.symbol}`);
+      await logEvent('SKIP', `Buy skipped ${token.symbol}: ${sized.reason}`, { mint: token.mintAddress });
+      if (isPendingPosition) this.activePositions.delete(token.mintAddress);
+      finishBuyTrace(token.mintAddress, sized.reason);
+      return;
+    }
+    const solAmount = sized.sol;
+
+    // Paper account must be able to afford the snipe.
+    if (CONFIG.PAPER_TRADING) {
+      if (!this.paperLedger || !this.paperLedger.canAfford(solAmount)) {
+        logger.warn(`Buy skipped (insufficient_capital): ${token.symbol} needs ${solAmount} SOL, cash ${this.paperLedger?.cashSol ?? 0} SOL`);
+        await logEvent('SKIP', `Buy skipped ${token.symbol}: insufficient_capital`, { mint: token.mintAddress, solAmount });
+        if (isPendingPosition) this.activePositions.delete(token.mintAddress);
+        finishBuyTrace(token.mintAddress, 'insufficient_capital');
+        const now = Date.now();
+        if (now - this.lastInsufficientCapitalAlert > 10 * 60_000) {
+          this.lastInsufficientCapitalAlert = now;
+          await telegram.alertError(`⚠️ Paper buy skipped: insufficient capital (need ${solAmount} SOL)`);
+        }
+        return;
+      }
+    }
 
     if (!CONFIG.PAPER_TRADING) {
       const sec = await this.gmgnSwap.checkTokenSecurity(token.mintAddress);
@@ -619,6 +731,13 @@ class ElonSniper {
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' :
                    CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
+
+    // Paper ledger: debit only after the paper buy succeeded.
+    if (source === 'paper' && this.paperLedger) {
+      if (!this.paperLedger.debit(solAmount)) {
+        logger.warn(`Paper ledger debit failed for ${token.symbol} (${solAmount} SOL) — cash ${this.paperLedger.cashSol} SOL`);
+      }
+    }
 
     const positionData = {
       token,
@@ -724,6 +843,11 @@ class ElonSniper {
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' : CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
+    // Paper ledger: credit proceeds (cost basis sold + pnl) on every paper sell.
+    if (source === 'paper' && this.paperLedger) {
+      this.paperLedger.credit(partialSolSpent + pnlSol);
+    }
+
     await Promise.all([
       insertTrade({
         type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
@@ -801,6 +925,11 @@ class ElonSniper {
 
     const source = result.txSignature?.startsWith('paper') ? 'paper' :
                    CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
+
+    // Paper ledger: credit proceeds (remaining cost basis + pnl) on every paper sell.
+    if (source === 'paper' && this.paperLedger) {
+      this.paperLedger.credit(position.solSpent + pnlSol);
+    }
 
     await Promise.all([
       insertTrade({
@@ -987,6 +1116,7 @@ class ElonSniper {
         const price = resp.data?.solana?.usd;
         if (price && price > 0) {
           this.solPriceUsd = price;
+          this.solPriceFetched = true;
           logger.info(`SOL price updated: $${price.toFixed(2)}`);
         }
       } catch {
@@ -997,6 +1127,19 @@ class ElonSniper {
   }
 
   // ─── State / status ────────────────────────────────────────────
+
+  /** Open-position inputs for paper equity math (skips pending placeholders). */
+  private paperOpenInputs(): { solSpent: number; pnlPercent: number }[] {
+    const out: { solSpent: number; pnlPercent: number }[] = [];
+    for (const [, pos] of this.activePositions) {
+      if (!pos.token || !pos.buyResult) continue;
+      const pnlPercent = pos.entryPriceUsd > 0
+        ? ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd) * 100
+        : 0;
+      out.push({ solSpent: pos.solSpent, pnlPercent });
+    }
+    return out;
+  }
 
   private getDashboardState(): BotState {
     const positions: ActivePositionInfo[] = [];
@@ -1032,20 +1175,52 @@ class ElonSniper {
       });
     }
 
-    return {
+    const ledger = CONFIG.PAPER_TRADING ? this.paperLedger : null;
+    const state: BotState = {
       mode:             CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE',
       running:          true,
       paused:           this.paused,
       uptime:           Date.now() - this.startTime,
       tweetsDetected:   this.tweetsDetected,
       buysExecuted:     this.buysExecuted,
-      solBalance:       this.solBalance,
+      solBalance:       ledger ? ledger.cashSol : this.solBalance,
       solPriceUsd:      this.solPriceUsd,
       activePositions:  positions,
     };
+    if (ledger) {
+      const e = ledger.equity(this.paperOpenInputs(), this.solPriceUsd);
+      state.paper = {
+        startUsd: this.paperAccountStartUsd,
+        cashUsd: e.cashUsd,
+        openValueUsd: e.openValueUsd,
+        equityUsd: e.equityUsd,
+        pnlUsd: e.pnlUsd,
+        pnlPct: e.pnlPct,
+      };
+    }
+    return state;
   }
 
   private getBalanceMessage(): string {
+    if (CONFIG.PAPER_TRADING && this.paperLedger) {
+      const opens = this.paperOpenInputs();
+      const e = this.paperLedger.equity(opens, this.solPriceUsd);
+      const sign = e.pnlUsd >= 0 ? '+' : '-';
+      const cashSol = this.paperLedger.cashSol;
+      return [
+        `💰 <b>Paper Account</b>`,
+        '',
+        `Start: <b>$${e.startUsd.toFixed(2)}</b>`,
+        `Cash: <b>$${e.cashUsd.toFixed(2)}</b> (${cashSol.toFixed(4)} SOL)`,
+        `Open: <b>$${e.openValueUsd.toFixed(2)}</b> (${opens.length} positions)`,
+        `Equity: <b>$${e.equityUsd.toFixed(2)}</b>`,
+        '',
+        `📈 PnL: <b>${sign}$${Math.abs(e.pnlUsd).toFixed(2)} (${sign}${Math.abs(e.pnlPct).toFixed(2)}%)</b>`,
+        '',
+        `💵 SOL Price: $${this.solPriceUsd.toFixed(2)}`,
+        `📊 Mode: PAPER`,
+      ].join('\n');
+    }
     const solUsd = this.solBalance * this.solPriceUsd;
     const pnlUsd = this.totalPnlSol * this.solPriceUsd;
     const sign   = this.totalPnlSol >= 0 ? '+' : '';
@@ -1269,6 +1444,7 @@ async function main() {
     telegram.stopPolling();
     telegram.cancelPendingApprovals();
     sniper['pumpListener'].stop();
+    await stopDashboardServer();
     await closeDb();
     process.exit(0);
   };
@@ -1276,6 +1452,7 @@ async function main() {
   process.on('SIGTERM', shutdown);
 
   await initDb();
+  await sniper.initPaperLedger();
   await sniper.start();
 }
 

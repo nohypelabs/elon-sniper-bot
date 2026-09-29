@@ -1,6 +1,6 @@
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
 import { ensureDb, type Db } from './client';
-import { botEvents, latencyTraces, positions, trades, type NewPosition, type NewTrade } from './schema';
+import { botEvents, latencyTraces, paperAccount, positions, trades, type NewPaperAccount, type NewPosition, type NewTrade } from './schema';
 import type { Trace } from '../metrics/latency';
 
 async function handle(override?: Db): Promise<Db> {
@@ -186,6 +186,44 @@ export async function upsertPosition(
 export async function deletePosition(tokenMint: string, dbOverride?: Db) {
   const d = await handle(dbOverride);
   await d.delete(positions).where(eq(positions.tokenMint, tokenMint));
+}
+
+// ─── Paper account ────────────────────────────────────────────
+
+/** The singleton 'main' paper account, or undefined when never created. */
+export async function getPaperAccount(dbOverride?: Db) {
+  const d = await handle(dbOverride);
+  const rows = await d.select().from(paperAccount).where(eq(paperAccount.id, 'main')).limit(1);
+  return rows[0];
+}
+
+/**
+ * Insert the 'main' paper account. Idempotent: concurrent/second calls are
+ * ignored (onConflictDoNothing), so the stored startSol never changes.
+ */
+export async function createPaperAccount(data: NewPaperAccount, dbOverride?: Db) {
+  const d = await handle(dbOverride);
+  const [row] = await d
+    .insert(paperAccount)
+    .values({ id: 'main', ...data })
+    .onConflictDoNothing({ target: paperAccount.id })
+    .returning();
+  return row;
+}
+
+/** Paper-only trade rows (oldest first) for rebuilding the PaperLedger. */
+export async function listPaperTradesForLedger(dbOverride?: Db) {
+  const d = await handle(dbOverride);
+  return d
+    .select({
+      type: trades.type,
+      source: trades.source,
+      solAmount: trades.solAmount,
+      pnlSol: trades.pnlSol,
+    })
+    .from(trades)
+    .where(eq(trades.source, 'paper'))
+    .orderBy(asc(trades.createdAt));
 }
 
 // ─── Events ─────────────────────────────────────────────────────

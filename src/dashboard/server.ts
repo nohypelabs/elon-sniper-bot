@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { getRequestListener } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { createServer, IncomingMessage } from 'http';
+import { createServer, IncomingMessage, type Server } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   countTrades,
@@ -41,6 +41,14 @@ export interface BotState {
   solBalance: number;
   solPriceUsd: number;
   activePositions: ActivePositionInfo[];
+  paper?: {
+    startUsd: number;
+    cashUsd: number;
+    openValueUsd: number;
+    equityUsd: number;
+    pnlUsd: number;
+    pnlPct: number;
+  };
 }
 
 function periodToDate(period: string): Date | null {
@@ -69,6 +77,8 @@ export interface ActivePositionInfo {
 }
 
 let wss: WebSocketServer | null = null;
+let httpServerInstance: Server | null = null;
+let broadcastTimer: ReturnType<typeof setInterval> | null = null;
 let botStateGetter: () => BotState = () => ({
   mode: 'PAPER', running: false, paused: false, uptime: 0,
   tweetsDetected: 0, buysExecuted: 0, solBalance: 0, solPriceUsd: 0,
@@ -243,12 +253,20 @@ export async function startDashboardServer() {
   });
 
   app.post('/api/config', async c => {
-    const body = await c.req.json().catch(() => ({}));
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+    }
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+    }
     const updated: Record<string, number | boolean> = {};
 
     for (const key of [...EDITABLE_CONFIG, 'PAPER_TRADING'] as string[]) {
-      if (!(key in body)) continue;
-      const val = body[key];
+      if (!(key in (body as Record<string, unknown>))) continue;
+      const val = (body as Record<string, unknown>)[key];
       if (typeof val === 'boolean' || typeof val === 'number') updated[key] = val;
     }
 
@@ -385,8 +403,9 @@ export async function startDashboardServer() {
     ws.on('error', () => {});
   });
 
-  // Push state every 5s
-  setInterval(broadcastState, 5_000);
+  // Push state every 5s (unref'd so it never keeps the process alive)
+  broadcastTimer = setInterval(broadcastState, 5_000);
+  broadcastTimer.unref?.();
 
   const bindPort = async (startPort: number, maxAttempts = 10): Promise<number> => {
     for (let i = 0; i < maxAttempts; i++) {
@@ -417,5 +436,32 @@ export async function startDashboardServer() {
   }
   logger.info(`Dashboard → http://localhost:${actualPort}`);
 
+  httpServerInstance = httpServer;
   return httpServer;
+}
+
+/** Stop the dashboard: clear the broadcast timer, drop WS clients, close HTTP. */
+export async function stopDashboardServer(): Promise<void> {
+  if (broadcastTimer) {
+    clearInterval(broadcastTimer);
+    broadcastTimer = null;
+  }
+  try {
+    wss?.clients.forEach(client => {
+      try { client.close(); } catch { /* ignore */ }
+    });
+  } catch { /* ignore */ }
+  try { wss?.close(); } catch { /* ignore */ }
+  wss = null;
+  const srv = httpServerInstance;
+  httpServerInstance = null;
+  if (srv) {
+    await new Promise<void>((resolve) => {
+      try {
+        srv.close(() => resolve());
+      } catch {
+        resolve();
+      }
+    });
+  }
 }

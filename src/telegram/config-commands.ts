@@ -99,6 +99,11 @@ function safeBool(config: Record<string, any>, key: string): boolean {
  */
 export function renderConfig(config: Record<string, any>): string {
   const buy = safeNum(config, 'BUY_AMOUNT_SOL', 0);
+  const buyUsd = safeNum(config, 'BUY_AMOUNT_USD', 0);
+  const solRef = safeNum(config, 'PUMP_SOL_PRICE_USD', 150);
+  const buyLine = buyUsd > 0
+    ? `💰 Buy Amount: $${buyUsd} (≈ ${(solRef > 0 ? buyUsd / solRef : buy).toFixed(4)} SOL)`
+    : `💰 Buy Amount: ${buy} SOL`;
   const tp1 = safeNum(config, 'TP1_PERCENT', 0);
   const tp1sell = safeNum(config, 'TP1_SELL_PERCENT', 0);
   const tp2 = safeNum(config, 'TP2_PERCENT', 0);
@@ -126,7 +131,7 @@ export function renderConfig(config: Record<string, any>): string {
   return [
     `⚙️ <b>Sniper Config</b>`,
     '',
-    `💰 Buy Amount: ${buy} SOL`,
+    buyLine,
     `🎯 TP1: +${tp1}% (jual ${tp1sell}%)`,
     `🎯 TP2: +${tp2}%`,
     `🌙 Moonbag: ${moonbagOn ? `${moonbagPct}%` : 'OFF'}`,

@@ -46,10 +46,6 @@ let pauseCalls = 0;
 let resumeCalls = 0;
 const sellCalls: string[] = [];
 
-// interval capture (server.ts has setInterval(broadcastState) with no handle)
-let origSetInterval: typeof setInterval = globalThis.setInterval;
-const capturedIntervals: ReturnType<typeof setInterval>[] = [];
-
 // original env to restore
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -110,14 +106,8 @@ before(async () => {
   process.env['TELEGRAM_CHAT_ID'] = '';
   delete process.env['DASHBOARD_ALLOWED_ORIGINS'];
 
-  // Capture the broadcast interval so `after` can clear it (test side only).
-  origSetInterval = globalThis.setInterval;
-  capturedIntervals.length = 0;
-  (globalThis as unknown as { setInterval: unknown }).setInterval = ((...args: unknown[]) => {
-    const h = (origSetInterval as (...a: unknown[]) => ReturnType<typeof setInterval>)(...args);
-    capturedIntervals.push(h);
-    return h;
-  }) as typeof setInterval;
+  // The broadcast interval is owned by the server module and stopped via
+  // stopDashboardServer() in `after` — no test-side capture needed.
 
   const dbClient = await import('../db/client');
   const repo = await import('../db/repo');
@@ -217,7 +207,6 @@ before(async () => {
 
   broadcastStateFn = serverMod.broadcastState;
   const srv = await serverMod.startDashboardServer();
-  (globalThis as unknown as { setInterval: unknown }).setInterval = origSetInterval;
   httpServer = srv as unknown as Server;
   const addr = httpServer.address();
   assert.ok(addr && typeof addr === 'object', 'server should be listening');
@@ -233,14 +222,22 @@ after(async () => {
       // best-effort
     }
   }
+  try {
+    const serverMod = await import('./server');
+    await serverMod.stopDashboardServer();
+  } catch {
+    // best-effort
+  }
   if (httpServer) {
     await new Promise<void>((resolve) => {
-      httpServer!.close(() => resolve());
+      try {
+        httpServer!.close(() => resolve());
+      } catch {
+        resolve();
+      }
     });
     httpServer = null;
   }
-  for (const h of capturedIntervals) clearInterval(h);
-  capturedIntervals.length = 0;
   try {
     const dbClient = await import('../db/client');
     await dbClient.closeDb();
@@ -522,15 +519,28 @@ describe('POST /api/config body regression', () => {
     await getRes.text();
   });
 
-  it('malformed JSON does not crash the server', async () => {
+  it('malformed JSON answers 400 and does not crash the server', async () => {
     const res = await fetch(`${base}/api/config`, {
       method: 'POST',
       headers: { authorization: GOOD_AUTH, 'content-type': 'application/json' },
       body: '{not-json',
       signal: AbortSignal.timeout(5000),
     });
-    assert.ok(res.status === 200);
-    await res.text();
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.equal(body.error, 'invalid JSON body');
+    // A JSON body that is not an object is rejected the same way.
+    const resArr = await fetch(`${base}/api/config`, {
+      method: 'POST',
+      headers: { authorization: GOOD_AUTH, 'content-type': 'application/json' },
+      body: '[1,2]',
+      signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(resArr.status, 400);
+    const bodyArr = (await resArr.json()) as { ok: boolean; error: string };
+    assert.equal(bodyArr.ok, false);
+    assert.equal(bodyArr.error, 'invalid JSON body');
     const getRes = await authedFetch('/api/config');
     assert.equal(getRes.status, 200);
     await getRes.text();
