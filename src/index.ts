@@ -16,6 +16,7 @@ import {
   ActivePositionInfo,
 } from './dashboard/server';
 import { PumpFunListener, NewPumpToken } from './scanner/pumpfun.listener';
+import { updatePeak, evaluateExit } from './strategy/exit-rules';
 
 interface ActivePosition {
   token: FoundToken;
@@ -250,16 +251,23 @@ class ElonSniper {
       this.pumpListener.subscribeToTrades(token.mint, (priceInSol) => {
         const pos = this.activePositions.get(token.mint);
         if (!pos || pos.isSelling) return;
-        const effectiveStopLoss = Math.min(CONFIG.STOP_LOSS_PERCENT, 25);
 
         pos.currentPriceUsd = priceInSol * this.solPriceUsd;
         if (pos.entryPriceUsd <= 0) return;
 
         const pnl = (pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100;
-        const trailingHit = this.trailingTpTriggered(pos, pnl);
+        updatePeak(pos, pnl);
+        const exit = evaluateExit(pos, pnl, {
+          AUTO_SELL: CONFIG.AUTO_SELL,
+          TP1_PERCENT: CONFIG.TP1_PERCENT,
+          TP2_PERCENT: CONFIG.TP2_PERCENT,
+          STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
+          TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
+          TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
+        });
 
         // Immediate TP1 check
-        if (!pos.tp1Hit && CONFIG.AUTO_SELL && pnl >= CONFIG.TP1_PERCENT) {
+        if (exit.action === 'tp1') {
           pos.tp1Hit = true;
           pos.isSelling = true;
           logger.info(`🎯 TP1 (realtime) +${pnl.toFixed(1)}%: ${token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
@@ -269,28 +277,24 @@ class ElonSniper {
         }
 
         // Immediate TP2 / full TP check
-        if (CONFIG.AUTO_SELL && (
-          (pos.tp1Hit && !pos.tp2Hit && !CONFIG.TRAILING_TP_ENABLED && pnl >= CONFIG.TP2_PERCENT) ||
-          (!pos.tp1Hit && pnl >= CONFIG.TP2_PERCENT)
-        )) {
+        if (exit.action === 'tp2') {
           this.executeTp2TakeProfit(token.mint, pos, pnl, true).catch(() => {});
           return;
         }
 
         // Immediate SL check
-        if (!pos.tp1Hit && !pos.tp2Hit && CONFIG.AUTO_SELL && pnl <= -effectiveStopLoss) {
+        if (exit.action === 'sl') {
           pos.isSelling = true;
           logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${token.symbol}`);
-          this.executeSell(token.mint, pos, `SL -${effectiveStopLoss}% (realtime)`).catch(() => {});
+          this.executeSell(token.mint, pos, `${exit.reason} (realtime)`).catch(() => {});
           return;
         }
 
         // Trailing SL after TP1
-        if (pos.tp1Hit && !pos.tp2Hit && CONFIG.AUTO_SELL && (pnl <= 0 || trailingHit)) {
+        if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp') {
           pos.isSelling = true;
-          const reason = trailingHit && pnl > 0 ? `trailing-TP (peak +${pos.peakPnlPercent?.toFixed(0)}%)` : 'trailing-SL after TP1';
-          logger.info(`🛑 ${reason} (realtime): ${token.symbol} ${pnl.toFixed(1)}%`);
-          this.executeSell(token.mint, pos, reason).catch(() => {});
+          logger.info(`🛑 ${exit.reason} (realtime): ${token.symbol} ${pnl.toFixed(1)}%`);
+          this.executeSell(token.mint, pos, exit.reason).catch(() => {});
         }
       });
     }
@@ -678,12 +682,19 @@ class ElonSniper {
 
           logger.info(`📈 ${position.token.symbol} | entry: $${position.entryPriceUsd.toExponential(3)} | now: $${position.currentPriceUsd.toExponential(3)} | pnl: ${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(1)}%`);
 
-          const trailingHit = this.trailingTpTriggered(position, pnlPercent);
+          updatePeak(position, pnlPercent);
+          const exit = evaluateExit(position, pnlPercent, {
+            AUTO_SELL: CONFIG.AUTO_SELL,
+            TP1_PERCENT: CONFIG.TP1_PERCENT,
+            TP2_PERCENT: CONFIG.TP2_PERCENT,
+            STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
+            TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
+            TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
+          });
 
-          if (CONFIG.AUTO_SELL && !position.isSelling) {
-            const effectiveStopLoss = Math.min(CONFIG.STOP_LOSS_PERCENT, 25);
+          if (exit.action !== 'none') {
             // TP1: sell TP1_SELL_PERCENT% at TP1_PERCENT gain
-            if (!position.tp1Hit && pnlPercent >= CONFIG.TP1_PERCENT) {
+            if (exit.action === 'tp1') {
               position.tp1Hit = true;
               position.isSelling = true;
               logger.info(`🎯 TP1 +${pnlPercent.toFixed(1)}%: ${position.token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
@@ -693,32 +704,26 @@ class ElonSniper {
               continue;
             }
 
-            // TP2: sell remaining at TP2_PERCENT gain (full close)
-            if (position.tp1Hit && !position.tp2Hit && !CONFIG.TRAILING_TP_ENABLED && pnlPercent >= CONFIG.TP2_PERCENT) {
-              await this.executeTp2TakeProfit(mint, position, pnlPercent, false);
-              continue;
-            }
-
-            // Fallback full TP (jumped directly past TP2 without hitting TP1)
-            if (!position.tp1Hit && pnlPercent >= CONFIG.TP2_PERCENT) {
+            // TP2: sell remaining at TP2_PERCENT gain (full close),
+            // incl. fallback full TP (jumped directly past TP2 without hitting TP1)
+            if (exit.action === 'tp2') {
               await this.executeTp2TakeProfit(mint, position, pnlPercent, false);
               continue;
             }
 
             // Stop Loss
-            if (!position.tp1Hit && !position.tp2Hit && pnlPercent <= -effectiveStopLoss) {
+            if (exit.action === 'sl') {
               position.isSelling = true;
               logger.info(`🛑 STOP LOSS ${pnlPercent.toFixed(1)}%: ${position.token.symbol}`);
-              await this.executeSell(mint, position, `SL -${effectiveStopLoss}%`);
+              await this.executeSell(mint, position, exit.reason);
               continue;
             }
 
-            // Trailing SL after TP1: exit if drops back to breakeven
-            if (position.tp1Hit && !position.tp2Hit && (pnlPercent <= 0 || trailingHit)) {
+            // Trailing SL / trailing TP after TP1
+            if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp') {
               position.isSelling = true;
-              const reason = trailingHit && pnlPercent > 0 ? `trailing-TP (peak +${position.peakPnlPercent?.toFixed(0)}%)` : 'trailing-SL after TP1';
-              logger.info(`🛑 ${reason}: ${position.token.symbol} ${pnlPercent.toFixed(1)}%`);
-              await this.executeSell(mint, position, reason);
+              logger.info(`🛑 ${exit.reason}: ${position.token.symbol} ${pnlPercent.toFixed(1)}%`);
+              await this.executeSell(mint, position, exit.reason);
             }
           }
         } catch {
@@ -954,13 +959,6 @@ class ElonSniper {
   }
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
-
-  /** Record the peak PnL; returns true when trailing TP says to exit the post-TP1 remainder. */
-  private trailingTpTriggered(pos: ActivePosition, pnl: number): boolean {
-    pos.peakPnlPercent = Math.max(pos.peakPnlPercent ?? pnl, pnl);
-    if (!CONFIG.TRAILING_TP_ENABLED || !pos.tp1Hit || pos.tp2Hit) return false;
-    return pnl <= Math.max(0, pos.peakPnlPercent - CONFIG.TRAILING_TP_DROP_PERCENT);
-  }
 
   private async executeTp2TakeProfit(
     mint: string,
