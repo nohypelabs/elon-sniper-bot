@@ -21,7 +21,13 @@ import axios, { AxiosError } from 'axios';
 import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
-import { EDITABLE_CONFIG, CONFIG_ALIASES, PRESETS, resolveKey, parseValue, tryApplyConfig } from '../config/editable';
+import { tryApplyConfig } from '../config/editable';
+import {
+  escapeHtml,
+  handlePresetCommand,
+  handleSetCommand,
+  renderConfig,
+} from './config-commands';
 import { FoundToken } from '../scanner/token.finder';
 import { ApprovalGate } from './approval-gate';
 
@@ -443,32 +449,11 @@ async function pollLoop(): Promise<void> {
         } else if (text === '/tunnel stop') {
           await send(stopTunnel());
         } else if (text === '/config') {
-          await send([
-            `⚙️ <b>Sniper Config</b>`,
-            '',
-            `💰 Buy Amount: ${CONFIG.BUY_AMOUNT_SOL} SOL`,
-            `📊 Max MCap: $${formatNum(CONFIG.MAX_MCAP_USD)}`,
-            `🎯 Take Profit: +${CONFIG.TAKE_PROFIT_PERCENT}%`,
-            `🛑 Stop Loss: -${CONFIG.STOP_LOSS_PERCENT}%`,
-            `📉 Slippage: ${CONFIG.MAX_SLIPPAGE_BPS / 100}%`,
-            `🤖 Auto Sell: ${CONFIG.AUTO_SELL ? 'ON' : 'OFF'}`,
-            `📝 Mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`,
-            `⏱ Poll Interval: ${CONFIG.TWEET_POLL_INTERVAL_MS / 1000}s`,
-            '',
-            `<b>PumpFun</b>`,
-            `📦 Max Posisi: ${CONFIG.PUMP_MAX_POSITIONS}`,
-            `⌛ Max Hold: ${CONFIG.PUMP_MAX_HOLD_MINUTES} menit`,
-            `👨‍💻 Min Dev Buy: ${CONFIG.PUMP_MIN_DEV_BUY_SOL} SOL`,
-            `🔒 Security Check: ${CONFIG.PUMP_SECURITY_CHECK ? 'ON' : 'OFF'}`,
-            `📈 Trailing TP: ${CONFIG.TRAILING_TP_ENABLED ? `ON (drop ${CONFIG.TRAILING_TP_DROP_PERCENT}%)` : 'OFF'}`,
-            `🕹 Approval Buy: ${CONFIG.BUY_APPROVAL_ENABLED ? `ON (${CONFIG.BUY_APPROVAL_TIMEOUT_SEC}s)` : 'OFF'}`,
-            '',
-            `Ubah: /set &lt;nama&gt; &lt;nilai&gt; atau /preset lowrisk`,
-          ].join('\n'));
+          await send(renderConfig(CONFIG as any));
         } else if (text === '/set' || text.startsWith('/set ')) {
-          await send(handleSet(text.split(/\s+/).slice(1)));
+          await send(handleSetCommand(text.split(/\s+/).slice(1), { config: CONFIG as any, apply: tryApplyConfig }));
         } else if (text === '/preset' || text.startsWith('/preset ')) {
-          await send(handlePreset(text.split(/\s+/)[1]));
+          await send(handlePresetCommand(text.split(/\s+/)[1], { config: CONFIG as any, apply: tryApplyConfig }));
         } else if (text === '/help') {
           await send([
             `🤖 <b>Elon Sniper Bot</b>`,
@@ -539,58 +524,10 @@ async function answerCb(id: string, text?: string): Promise<void> {
   } catch { /* non-critical */ }
 }
 
-// ─── Config editing ───────────────────────────────────────────────
-
-function fmtVal(v: unknown): string {
-  return typeof v === 'boolean' ? (v ? 'ON' : 'OFF') : String(v);
-}
-
-function handleSet(args: string[]): string {
-  if (args.length < 2) {
-    const aliases = Object.entries(CONFIG_ALIASES).map(([a, k]) => `• <code>${a}</code> → ${k} (${fmtVal((CONFIG as any)[k])})`);
-    return [
-      `⚙️ <b>Cara pakai:</b> /set &lt;nama&gt; &lt;nilai&gt;`,
-      `Contoh: <code>/set buy 0.25</code>, <code>/set security on</code>`,
-      '',
-      ...aliases,
-      '',
-      `Atau nama env lengkap: ${EDITABLE_CONFIG.join(', ')}`,
-    ].join('\n');
-  }
-
-  const key = resolveKey(args[0]);
-  if (!key) return `❌ Nama tidak dikenal: ${escapeHtml(args[0])}. Kirim /set untuk daftar.`;
-
-  const value = parseValue(key, args[1]);
-  if (typeof value === 'string') return `❌ ${escapeHtml(value)}`;
-
-  const before = (CONFIG as any)[key];
-  const err = tryApplyConfig({ [key]: value });
-  if (err) return `❌ ${escapeHtml(err)}`;
-  return `✅ <b>${key}</b>: ${fmtVal(before)} → ${fmtVal(value)}`;
-}
-
-function handlePreset(name?: string): string {
-  const preset = name ? PRESETS[name.toLowerCase()] : undefined;
-  if (!preset) return `Preset tersedia: ${Object.keys(PRESETS).join(', ')}\nContoh: /preset lowrisk`;
-
-  const lines = Object.entries(preset).map(([k, v]) => `• ${k}: ${fmtVal((CONFIG as any)[k])} → ${fmtVal(v)}`);
-  const err = tryApplyConfig(preset as Record<string, number | boolean>);
-  if (err) return `❌ Preset ${escapeHtml(name!)} ditolak, tidak ada yang berubah: ${escapeHtml(err)}`;
-  return [`✅ <b>Preset ${escapeHtml(name!)} diterapkan</b>`, ...lines].join('\n');
-}
-
 // ─── Utilities ────────────────────────────────────────────────────
 
 function formatNum(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toFixed(2);
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
