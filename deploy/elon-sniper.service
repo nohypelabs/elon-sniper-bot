@@ -12,8 +12,9 @@ ExecStart=/usr/local/bin/node dist/index.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
-# Minipc is small and shared with other services
-MemoryMax=1G
+# Minipc is small (3.8 GB) and shared. PGlite (WASM Postgres) peaks ~1.1 GB RSS at startup, settles ~450 MB.
+MemoryHigh=1300M
+MemoryMax=1600M
 
 [Install]
 WantedBy=default.target
