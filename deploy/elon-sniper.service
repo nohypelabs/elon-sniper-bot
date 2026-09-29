@@ -1,0 +1,19 @@
+# systemd USER unit (runs as dracarys, no sudo; needs `loginctl enable-linger`).
+# Installed to ~/.config/systemd/user/elon-sniper.service by deploy/deploy.sh
+[Unit]
+Description=Elon Sniper Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/elon-sniper-bot
+ExecStart=/usr/local/bin/node dist/index.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+# Minipc is small and shared with other services
+MemoryMax=1G
+
+[Install]
+WantedBy=default.target
