@@ -18,7 +18,7 @@ import {
 import { logger } from '../utils/logger';
 import { runBacktest } from '../backtest/runner';
 import { CONFIG } from '../config';
-import { EDITABLE_CONFIG, applyConfig } from '../config/editable';
+import { EDITABLE_CONFIG, tryApplyConfig } from '../config/editable';
 import path from 'path';
 import fs from 'fs';
 import { Keypair } from '@solana/web3.js';
@@ -250,7 +250,9 @@ export async function startDashboardServer() {
       if (typeof val === 'boolean' || typeof val === 'number') updated[key] = val;
     }
 
-    applyConfig(updated);
+    if (Object.keys(updated).length === 0) return c.json({ ok: true, updated });
+    const err = tryApplyConfig(updated);
+    if (err) return c.json({ ok: false, error: err }, 400);
     return c.json({ ok: true, updated });
   });
 

@@ -21,8 +21,9 @@ import axios, { AxiosError } from 'axios';
 import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
-import { EDITABLE_CONFIG, CONFIG_ALIASES, PRESETS, resolveKey, parseValue, applyConfig } from '../config/editable';
+import { EDITABLE_CONFIG, CONFIG_ALIASES, PRESETS, resolveKey, parseValue, tryApplyConfig } from '../config/editable';
 import { FoundToken } from '../scanner/token.finder';
+import { ApprovalGate } from './approval-gate';
 
 const API = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}`;
 const ENABLED = !!(CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_ID);
@@ -132,20 +133,21 @@ async function send(message: string): Promise<boolean> {
 async function sendWithButtons(
   message: string,
   buttons: { text: string; callback_data: string }[][],
-): Promise<boolean> {
-  if (!ENABLED) return false;
+): Promise<number | null> {
+  if (!ENABLED) return null;
   try {
-    await axios.post(`${API}/sendMessage`, {
+    const resp = await axios.post(`${API}/sendMessage`, {
       chat_id: CONFIG.TELEGRAM_CHAT_ID,
       text: message,
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: { inline_keyboard: buttons },
     });
-    return true;
+    const messageId = resp.data?.result?.message_id;
+    return typeof messageId === 'number' ? messageId : null;
   } catch (error) {
     logger.error(`Telegram sendWithButtons failed`);
-    return false;
+    return null;
   }
 }
 
@@ -283,38 +285,57 @@ export async function alertError(message: string): Promise<void> {
 
 // ─── Buy approval (Approve/Reject before auto-snipe) ──────────────
 
-const pendingApprovals = new Map<string, (approved: boolean) => void>();
-let approvalSeq = 0;
+// Testable approval state machine — no axios/Telegram in here.
+// bot.ts only: creates the entry, sends the buttons, resolves on callback.
+const approvalGate = new ApprovalGate();
+
+/** Best-effort removal of the Approve/Reject keyboard. Never throws. */
+async function clearApprovalKeyboard(messageId: number): Promise<void> {
+  if (!ENABLED) return;
+  try {
+    await axios.post(`${API}/editMessageReplyMarkup`, {
+      chat_id: CONFIG.TELEGRAM_CHAT_ID,
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+  } catch { /* non-critical */ }
+}
 
 /**
  * Ask on Telegram whether to buy. Resolves true only on an explicit Approve;
  * Reject, timeout, or a failed send all resolve false (fail closed).
  */
 export async function requestBuyApproval(summary: string, timeoutSec: number): Promise<boolean> {
-  const id = String(++approvalSeq);
-  const sent = await sendWithButtons(
+  // Create the gate entry FIRST so a fast tap can't arrive before we listen.
+  const { id, decision } = approvalGate.open(timeoutSec * 1000);
+
+  const messageId = await sendWithButtons(
     [`🕹 <b>Approve buy?</b>`, summary, '', `⏳ Auto-reject dalam ${timeoutSec}s`].join('\n'),
     [[
       { text: `✅ BUY ${CONFIG.BUY_AMOUNT_SOL} SOL`, callback_data: `appr:yes:${id}` },
       { text: '❌ Reject', callback_data: `appr:no:${id}` },
     ]],
   );
-  if (!sent) {
+  if (messageId === null) {
+    // Send failed (or Telegram disabled) — resolve as rejected, fail closed.
+    approvalGate.resolve(id, false);
     logger.warn('Buy approval requested but Telegram send failed — rejecting');
     return false;
   }
 
-  return new Promise<boolean>(resolve => {
-    const timer = setTimeout(() => {
-      pendingApprovals.delete(id);
-      resolve(false);
-    }, timeoutSec * 1000);
-    pendingApprovals.set(id, approved => {
-      clearTimeout(timer);
-      pendingApprovals.delete(id);
-      resolve(approved);
-    });
-  });
+  const outcome = await decision;
+
+  // After a decision or expiry, remove the keyboard (best-effort, never throw).
+  try {
+    await clearApprovalKeyboard(messageId);
+  } catch { /* non-critical */ }
+
+  return outcome === 'approved';
+}
+
+/** Resolve every pending approval as expired (used on shutdown). */
+export function cancelPendingApprovals(): void {
+  approvalGate.cancelAll();
 }
 
 // ─── Command handlers ──────────────────────────────────────────────
@@ -482,13 +503,12 @@ async function handleCallback(cbQuery: any): Promise<void> {
 
   if (data.startsWith('appr:')) {
     const [, choice, id] = data.split(':');
-    const resolve = pendingApprovals.get(id);
-    if (!resolve) {
+    const status = approvalGate.resolve(id, choice === 'yes');
+    if (status === 'unknown') {
       await answerCb(cbId, 'Kadaluarsa — sudah di-reject otomatis');
       return;
     }
     await answerCb(cbId, choice === 'yes' ? 'Buying...' : 'Rejected');
-    resolve(choice === 'yes');
     return;
   }
 
@@ -545,7 +565,8 @@ function handleSet(args: string[]): string {
   if (typeof value === 'string') return `❌ ${escapeHtml(value)}`;
 
   const before = (CONFIG as any)[key];
-  applyConfig({ [key]: value });
+  const err = tryApplyConfig({ [key]: value });
+  if (err) return `❌ ${escapeHtml(err)}`;
   return `✅ <b>${key}</b>: ${fmtVal(before)} → ${fmtVal(value)}`;
 }
 
@@ -554,7 +575,8 @@ function handlePreset(name?: string): string {
   if (!preset) return `Preset tersedia: ${Object.keys(PRESETS).join(', ')}\nContoh: /preset lowrisk`;
 
   const lines = Object.entries(preset).map(([k, v]) => `• ${k}: ${fmtVal((CONFIG as any)[k])} → ${fmtVal(v)}`);
-  applyConfig(preset as Record<string, number | boolean>);
+  const err = tryApplyConfig(preset as Record<string, number | boolean>);
+  if (err) return `❌ Preset ${escapeHtml(name!)} ditolak, tidak ada yang berubah: ${escapeHtml(err)}`;
   return [`✅ <b>Preset ${escapeHtml(name!)} diterapkan</b>`, ...lines].join('\n');
 }
 

@@ -25,6 +25,7 @@ import {
 } from './dashboard/server';
 import { PumpFunListener, NewPumpToken } from './scanner/pumpfun.listener';
 import { updatePeak, evaluateExit } from './strategy/exit-rules';
+import { refreshEntry } from './strategy/entry-price';
 
 interface ActivePosition {
   token: FoundToken;
@@ -218,14 +219,63 @@ class ElonSniper {
     };
 
     if (CONFIG.BUY_APPROVAL_ENABLED) {
-      const approved = await telegram.requestBuyApproval(
-        `<b>${token.name}</b> (${token.symbol})\nDev buy: ${token.initialBuySol} SOL | MCap: ${token.marketCapSol} SOL\n<a href="${foundToken.url}">pump.fun</a>`,
-        CONFIG.BUY_APPROVAL_TIMEOUT_SEC,
-      );
-      if (!approved) {
-        logger.info(`⏭ Buy not approved: ${token.symbol}`);
-        this.activePositions.delete(token.mint);
-        return;
+      // Track the live trade price during the approval wait so the entry can
+      // be re-priced — the snapshot above is stale by buy time (up to
+      // BUY_APPROVAL_TIMEOUT_SEC later). Temporary subscription: the listener
+      // holds exactly one callback per mint; it is always removed in the
+      // finally below, and the normal post-buy subscription later in this
+      // function re-subscribes fresh (handover = unsubscribe temp first).
+      let lastPriceSol: number | null = null;
+      this.pumpListener.subscribeToTrades(token.mint, (priceInSol) => {
+        lastPriceSol = priceInSol;
+      });
+      let proceed = false;
+      try {
+        const approved = await telegram.requestBuyApproval(
+          `<b>${token.name}</b> (${token.symbol})\nDev buy: ${token.initialBuySol} SOL | MCap: ${token.marketCapSol} SOL\n<a href="${foundToken.url}">pump.fun</a>`,
+          CONFIG.BUY_APPROVAL_TIMEOUT_SEC,
+        );
+        if (!approved) {
+          logger.info(`⏭ Buy not approved: ${token.symbol}`);
+          this.activePositions.delete(token.mint);
+          return;
+        }
+
+        // Re-check pause: the bot may have been paused during the wait.
+        if (this.paused) {
+          logger.info(`⏭ Bot paused during approval — skipping ${token.symbol}`);
+          this.activePositions.delete(token.mint);
+          return;
+        }
+
+        // Re-check max positions against OTHER positions (excluding our own placeholder).
+        const otherPositions = [...this.activePositions.keys()].filter(k => k !== token.mint).length;
+        if (otherPositions >= CONFIG.PUMP_MAX_POSITIONS) {
+          logger.info(`⏭ Max positions (${CONFIG.PUMP_MAX_POSITIONS}) reached during approval — skipping ${token.symbol}`);
+          this.activePositions.delete(token.mint);
+          return;
+        }
+
+        // Re-price the stale snapshot from the live trade feed.
+        const refreshed = refreshEntry(
+          { priceUsd: foundToken.priceUsd, mcapUsd: foundToken.mcapUsd },
+          lastPriceSol,
+          this.solPriceUsd,
+        );
+        if (refreshed.refreshed) {
+          logger.info(`🔄 Entry re-priced for ${token.symbol}: $${foundToken.priceUsd.toExponential(3)} → $${refreshed.priceUsd.toExponential(3)} (live trade feed)`);
+          foundToken.priceUsd = refreshed.priceUsd;
+          foundToken.mcapUsd = refreshed.mcapUsd;
+        }
+
+        proceed = true;
+      } finally {
+        // Always drop the temporary feed subscription; the post-buy
+        // subscription below re-subscribes fresh when a buy happens.
+        // On any non-buy path (rejected/expired/paused/max/exception) also
+        // remove the locked placeholder so it can't stick forever.
+        this.pumpListener.unsubscribeFromTrades(token.mint);
+        if (!proceed) this.activePositions.delete(token.mint);
       }
     }
 
@@ -1025,6 +1075,7 @@ async function main() {
     logger.info('Shutting down...');
     await logEvent('STOP', 'Bot stopped');
     telegram.stopPolling();
+    telegram.cancelPendingApprovals();
     sniper['pumpListener'].stop();
     await closeDb();
     process.exit(0);

@@ -457,6 +457,7 @@ function SettingsTab() {
   const [cfg, setCfg] = useState<BotConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/config').then(r => r.json()).then(setCfg)
@@ -465,12 +466,21 @@ function SettingsTab() {
   const save = async () => {
     if (!cfg) return
     setSaving(true)
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    })
+    let error: string | null = null
+    try {
+      const r = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || j.ok === false) error = j.error || `Gagal menyimpan (HTTP ${r.status})`
+    } catch {
+      error = 'Gagal menyimpan (tidak bisa menghubungi bot)'
+    }
     setSaving(false)
+    setSaveError(error)
+    if (error) return
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }
@@ -552,6 +562,9 @@ function SettingsTab() {
       >
         {saved ? '✓ Saved!' : saving ? 'Saving...' : 'Save Config'}
       </button>
+      {saveError && (
+        <p role="alert" className="text-xs text-red-400 text-center">{saveError}</p>
+      )}
       <p className="text-xs text-slate-600 text-center">Langsung aktif + tersimpan ke .env</p>
     </div>
   )
