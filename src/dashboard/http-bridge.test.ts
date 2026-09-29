@@ -7,7 +7,7 @@ import { getRequestListener } from '@hono/node-server';
 import { isAuthorized, unauthorizedResponseHeaders } from './auth';
 
 // NOTE: this test builds its own tiny Hono app and never imports server.ts,
-// because server.ts pulls in Prisma (database) at module load.
+// because server.ts pulls in the database layer at module load.
 
 // Same middleware ordering as server.ts: cors first, then auth.
 const USER = 'tester';

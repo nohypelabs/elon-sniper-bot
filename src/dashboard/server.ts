@@ -4,7 +4,17 @@ import { getRequestListener } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServer, IncomingMessage } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { db } from '../db/client';
+import {
+  countTrades,
+  listBuysForPairing,
+  listBuysForStats,
+  listEvents,
+  listPositions,
+  listSells,
+  listSellsForPnl,
+  listSellsForStats,
+  listTrades,
+} from '../db/repo';
 import { logger } from '../utils/logger';
 import { runBacktest } from '../backtest/runner';
 import { CONFIG } from '../config';
@@ -129,7 +139,7 @@ export async function startDashboardServer() {
   app.get('/api/status', c => c.json(botStateGetter()));
 
   app.get('/api/positions', async c => {
-    const positions = await db.position.findMany({ orderBy: { openedAt: 'desc' } });
+    const positions = await listPositions();
     return c.json(positions);
   });
 
@@ -137,8 +147,8 @@ export async function startDashboardServer() {
     const page  = parseInt(c.req.query('page')  || '1');
     const limit = parseInt(c.req.query('limit') || '50');
     const [trades, total] = await Promise.all([
-      db.trade.findMany({ orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
-      db.trade.count(),
+      listTrades({ page, limit }),
+      countTrades(),
     ]);
     return c.json({ trades, total, page, pages: Math.ceil(total / limit) });
   });
@@ -146,15 +156,8 @@ export async function startDashboardServer() {
   app.get('/api/trades/paired', async c => {
     // Fetch all sells + all buys in 2 queries, join in-memory (avoids N+1)
     const [sells, buys] = await Promise.all([
-      db.trade.findMany({
-        where: { type: 'SELL' },
-        orderBy: { createdAt: 'desc' },
-      }),
-      db.trade.findMany({
-        where: { type: 'BUY' },
-        select: { tokenMint: true, createdAt: true, mcapUsd: true },
-        orderBy: { createdAt: 'asc' },
-      }),
+      listSells(),
+      listBuysForPairing(),
     ]);
     const paired = sells.map(sell => {
       const matchingBuys = buys.filter(b => b.tokenMint === sell.tokenMint && b.createdAt <= sell.createdAt);
@@ -183,17 +186,7 @@ export async function startDashboardServer() {
     const period = c.req.query('period') || 'all';
     const mode = c.req.query('mode') || 'PAPER';
     const since  = periodToDate(period);
-    const where = { 
-      type: 'SELL', 
-      pnlSol: { not: null }, 
-      ...(since ? { createdAt: { gte: since } } : {}),
-      ...(mode === 'LIVE' ? { source: { not: "paper" } } : {})
-    };
-    const sells = await db.trade.findMany({
-      where,
-      orderBy: { createdAt: 'asc' },
-      select: { createdAt: true, pnlSol: true, pnlPercent: true, symbol: true },
-    });
+    const sells = await listSellsForPnl({ since, excludePaper: mode === 'LIVE' });
     let cumulative = 0;
     const points = sells.map(s => {
       cumulative += s.pnlSol ?? 0;
@@ -206,23 +199,10 @@ export async function startDashboardServer() {
     const period = c.req.query('period') || 'all';
     const mode = c.req.query('mode') || 'PAPER';
     const since  = periodToDate(period);
-    const sellWhere = { 
-      type: 'SELL', 
-      ...(since ? { createdAt: { gte: since } } : {}),
-      ...(mode === 'LIVE' ? { source: { not: "paper" } } : {})
-    };
 
     const [sells, buys] = await Promise.all([
-      db.trade.findMany({
-        where: sellWhere,
-        select: { pnlSol: true, pnlPercent: true, solAmount: true, tokenMint: true, createdAt: true },
-        orderBy: { createdAt: 'asc' },
-      }),
-      db.trade.findMany({
-        where: { type: 'BUY' },
-        select: { id: true, tokenMint: true, createdAt: true },
-        orderBy: { createdAt: 'asc' },
-      }),
+      listSellsForStats({ since, excludePaper: mode === 'LIVE' }),
+      listBuysForStats(),
     ]);
 
     const totalPnlSol = sells.reduce((s, t) => s + (t.pnlSol ?? 0), 0);
@@ -325,7 +305,7 @@ export async function startDashboardServer() {
 
   app.get('/api/events', async c => {
     const limit = parseInt(c.req.query('limit') || '100');
-    const events = await db.botEvent.findMany({ orderBy: { createdAt: 'desc' }, take: limit });
+    const events = await listEvents(limit);
     return c.json(events);
   });
 

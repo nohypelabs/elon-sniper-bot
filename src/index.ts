@@ -7,7 +7,15 @@ import { TokenFinder, FoundToken } from './scanner/token.finder';
 import { GmgnSwap } from './swap/gmgn.swap';
 import { JupiterSwap, SwapResult } from './swap/jupiter.swap';
 import * as telegram from './telegram/bot';
-import { db, logEvent } from './db/client';
+import { closeDb, initDb, logEvent } from './db/client';
+import {
+  deletePosition,
+  findLatestBuyBefore,
+  insertTrade,
+  listRecentSells,
+  listSellSummaries,
+  upsertPosition,
+} from './db/repo';
 import {
   startDashboardServer,
   registerDashboardHandlers,
@@ -425,29 +433,26 @@ class ElonSniper {
 
     // Persist to DB
     await Promise.all([
-      db.trade.create({
-        data: {
-          type: 'BUY', tokenMint: token.mintAddress, symbol: token.symbol,
-          name: token.name, solAmount, tokenAmount: result.outputAmount,
-          priceUsd: token.priceUsd, mcapUsd: token.mcapUsd,
-          txSignature: result.txSignature, source,
-          reason: 'tweet', tweetText: tweetText?.slice(0, 500),
-          dex: token.dex,
-        },
+      insertTrade({
+        type: 'BUY', tokenMint: token.mintAddress, symbol: token.symbol,
+        name: token.name, solAmount, tokenAmount: result.outputAmount,
+        priceUsd: token.priceUsd, mcapUsd: token.mcapUsd,
+        txSignature: result.txSignature, source,
+        reason: 'tweet', tweetText: tweetText?.slice(0, 500),
+        dex: token.dex,
       }),
-      db.position.upsert({
-        where: { tokenMint: token.mintAddress },
-        create: {
+      upsertPosition(
+        {
           tokenMint: token.mintAddress, symbol: token.symbol, name: token.name,
           entryPrice: token.priceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
           tweetText: tweetText?.slice(0, 500), dex: token.dex,
         },
-        update: {
+        {
           entryPrice: token.priceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
         },
-      }),
+      ),
       logEvent('BUY', `Bought ${token.symbol} with ${solAmount} SOL`, {
         mint: token.mintAddress, tx: result.txSignature, source,
       }),
@@ -502,14 +507,12 @@ class ElonSniper {
     const source = result.txSignature?.startsWith('paper') ? 'paper' : CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
     await Promise.all([
-      db.trade.create({
-        data: {
-          type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
-          name: position.token.name, solAmount: position.solSpent * sellPercent / 100,
-          tokenAmount: tokensToSell, priceUsd: position.currentPriceUsd,
-          mcapUsd: currentMcapUsd, pnlPercent, pnlSol,
-          txSignature: result.txSignature, source, reason, dex: position.token.dex,
-        },
+      insertTrade({
+        type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
+        name: position.token.name, solAmount: position.solSpent * sellPercent / 100,
+        tokenAmount: tokensToSell, priceUsd: position.currentPriceUsd,
+        mcapUsd: currentMcapUsd, pnlPercent, pnlSol,
+        txSignature: result.txSignature, source, reason, dex: position.token.dex,
       }),
       logEvent('SELL', `Partial ${sellPercent}% ${position.token.symbol} | PnL: ${pnlPercent.toFixed(1)}%`, { mint, reason, pnlPercent, pnlSol }),
     ]);
@@ -569,18 +572,16 @@ class ElonSniper {
                    CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
     await Promise.all([
-      db.trade.create({
-        data: {
-          type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
-          name: position.token.name, solAmount: position.solSpent,
-          tokenAmount: position.buyResult.outputAmount,
-          priceUsd: position.currentPriceUsd, mcapUsd: currentMcapUsd,
-          pnlPercent, pnlSol,
-          txSignature: result.txSignature, source, reason,
-          dex: position.token.dex,
-        },
+      insertTrade({
+        type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
+        name: position.token.name, solAmount: position.solSpent,
+        tokenAmount: position.buyResult.outputAmount,
+        priceUsd: position.currentPriceUsd, mcapUsd: currentMcapUsd,
+        pnlPercent, pnlSol,
+        txSignature: result.txSignature, source, reason,
+        dex: position.token.dex,
       }),
-      db.position.deleteMany({ where: { tokenMint: mint } }),
+      deletePosition(mint),
       logEvent('SELL', `Sold ${position.token.symbol} — PnL: ${pnlPercent.toFixed(1)}%`, {
         mint, reason, pnlPercent, pnlSol,
       }),
@@ -833,10 +834,7 @@ class ElonSniper {
   }
 
   private async getPnlMessage(): Promise<string> {
-    const sells = await db.trade.findMany({
-      where: { type: 'SELL' },
-      select: { pnlSol: true, pnlPercent: true, createdAt: true },
-    });
+    const sells = await listSellSummaries();
 
     if (sells.length === 0) return '📊 Belum ada trade yang selesai.';
 
@@ -899,21 +897,14 @@ class ElonSniper {
   }
 
   private async getHistoryMessage(): Promise<string> {
-    const sells = await db.trade.findMany({
-      where: { type: 'SELL' },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
+    const sells = await listRecentSells(10);
 
     if (sells.length === 0) return '📋 No completed trades yet.';
 
     const lines = [`📋 <b>Last ${sells.length} Trades</b>`, ''];
 
     for (const sell of sells) {
-      const buy = await db.trade.findFirst({
-        where: { type: 'BUY', tokenMint: sell.tokenMint, createdAt: { lte: sell.createdAt } },
-        orderBy: { createdAt: 'desc' },
-      });
+      const buy = await findLatestBuyBefore(sell.tokenMint, sell.createdAt);
 
       const pnl     = sell.pnlPercent ?? 0;
       const pnlSol  = sell.pnlSol ?? 0;
@@ -1035,12 +1026,13 @@ async function main() {
     await logEvent('STOP', 'Bot stopped');
     telegram.stopPolling();
     sniper['pumpListener'].stop();
-    await db.$disconnect();
+    await closeDb();
     process.exit(0);
   };
   process.on('SIGINT',  shutdown);
   process.on('SIGTERM', shutdown);
 
+  await initDb();
   await sniper.start();
 }
 

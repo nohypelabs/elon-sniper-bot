@@ -2,9 +2,11 @@
  * Quick loss-analysis: aggregate paired BUY/SELL outcomes to spot weak spots.
  * Run: pnpm tsx scripts/loss-analysis.ts
  */
-import { db as prisma } from '../src/db/client';
+import { closeDb, initDb } from '../src/db/client';
+import { listAllBuys, listSells } from '../src/db/repo';
+import type { Trade } from '../src/db/schema';
 
-type TradeRow = Awaited<ReturnType<typeof prisma.trade.findMany>>[number];
+type TradeRow = Trade;
 
 type LossDetail = {
   symbol: string;
@@ -51,15 +53,10 @@ function wrPct(v: BucketStats): number {
 }
 
 async function main() {
-  const sells = await prisma.trade.findMany({
-    where: { type: 'SELL' },
-    orderBy: { createdAt: 'desc' },
-  });
+  await initDb();
+  const sells = await listSells();
 
-  const buys = await prisma.trade.findMany({
-    where: { type: 'BUY' },
-    orderBy: { createdAt: 'asc' },
-  });
+  const buys = await listAllBuys();
   const buyMap = new Map<string, TradeRow>();
   const buysByToken = new Map<string, TradeRow[]>();
   for (const b of buys) {
@@ -273,7 +270,7 @@ async function main() {
     console.log(`# best buy-size bucket from your data: ${bestDev[0]} SOL (WR ${wrPct(bestDev[1]).toFixed(0)}%, pnl ${bestDev[1].pnl.toFixed(3)} SOL)`);
   }
 
-  await prisma.$disconnect();
+  await closeDb();
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

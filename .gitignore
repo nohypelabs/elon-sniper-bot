@@ -6,7 +6,8 @@ dist/
 /.docdex-state/
 *.db
 *.db-journal
-prisma/dev.db
+data/*.pglite
+data/*.pglite/
 
 # Runtime data. The example wallet list is the only tracked file in here —
 # a negation only works because the directory itself isn't excluded.

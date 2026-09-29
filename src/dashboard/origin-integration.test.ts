@@ -9,7 +9,7 @@ import { isAuthorized } from './auth';
 import { isOriginAllowed } from './origin-guard';
 
 // NOTE: tiny app mirroring server.ts middleware order (cors -> origin-guard
-// -> auth). server.ts itself is never imported (it pulls in Prisma).
+// -> auth). server.ts itself is never imported (it pulls in the database layer).
 
 const USER = 'tester';
 const PASS = 's3cret';

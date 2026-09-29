@@ -5,35 +5,30 @@
  * Formula: pnlSol = solAmount * (pnlPercent / 100)
  * This matches what the bot now stores correctly for paper trades.
  *
- * Run once: pnpm tsx scripts/backfill-pnl.ts
+ * Run once: pnpm db:backfill-pnl
  */
-import { db } from '../src/db/client';
+import { closeDb, initDb } from '../src/db/client';
+import { listSellsNeedingBackfill, updateTradePnl } from '../src/db/repo';
 
 async function main() {
+  await initDb();
   // Trades where pnlSol is 0 or null but pnlPercent is non-zero → pre-fix bug
-  const trades = await db.trade.findMany({
-    where: {
-      type: 'SELL',
-      OR: [{ pnlSol: 0 }, { pnlSol: null }],
-      NOT: [{ pnlPercent: 0 }, { pnlPercent: null }],
-    },
-    select: { id: true, pnlPercent: true, solAmount: true },
-  });
+  const trades = await listSellsNeedingBackfill();
 
   console.log(`Found ${trades.length} SELL trades with pnlSol=0 to backfill`);
-  if (trades.length === 0) { await db.$disconnect(); return; }
+  if (trades.length === 0) { await closeDb(); return; }
 
   let updated = 0;
   for (const t of trades) {
     if (!t.pnlPercent || !t.solAmount) continue;
     const pnlSol = t.solAmount * (t.pnlPercent / 100);
-    await db.trade.update({ where: { id: t.id }, data: { pnlSol } });
+    await updateTradePnl(t.id, pnlSol);
     updated++;
     if (updated % 10 === 0) process.stdout.write(`\r  Updated ${updated}/${trades.length}...`);
   }
 
   console.log(`\nDone — backfilled ${updated} trades`);
-  await db.$disconnect();
+  await closeDb();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

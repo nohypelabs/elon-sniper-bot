@@ -1,8 +1,5 @@
 # pnpm 11+ refuses to run dependency build scripts unless explicitly allowed.
 allowBuilds:
-  '@prisma/client': true
-  '@prisma/engines': true
-  prisma: true
   esbuild: true
   # optional native accelerators for ws; it falls back to pure JS without them
   bigint-buffer: false

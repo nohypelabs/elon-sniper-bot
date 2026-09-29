@@ -33,7 +33,6 @@ if ! command -v pnpm >/dev/null; then
 fi
 pnpm install --frozen-lockfile
 pnpm -C dashboard install --frozen-lockfile
-node_modules/.bin/prisma generate
 pnpm build
 mkdir -p ~/.config/systemd/user
 install -m 644 deploy/elon-sniper.service ~/.config/systemd/user/elon-sniper.service

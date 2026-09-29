@@ -15,9 +15,7 @@ pnpm build
 pnpm start
 
 # Database operations
-pnpm db:generate    # Generate Prisma client after schema changes
-pnpm db:migrate     # Run migrations in dev
-pnpm db:push        # Push schema changes without migration
+pnpm db:generate    # Generate SQL migration via drizzle-kit after schema changes
 pnpm db:backfill-pnl  # Backfill PnL for existing trades
 
 # Run dashboard only (Vite dev server)
@@ -91,8 +89,8 @@ This is a Solana meme coin trading bot with two primary sniping modes:
 - Inline buttons for buy/sell confirmation
 - Cloudflare Tunnel integration for remote dashboard access
 
-**Database** (`prisma/schema.prisma`)
-- PostgreSQL via Supabase
+**Database** (`src/db/schema.ts`, migrations in `drizzle/`)
+- Embedded local Postgres via PGlite (file-backed at `DB_PATH`, default `data/sniper.pglite`), Drizzle ORM
 - `Trade`: BUY/SELL records with PnL, reason, source (gmgn/jupiter/paper), tx signature
 - `Position`: Active positions (in-memory primary, DB for persistence)
 - `BotEvent`: Lifecycle events for debugging/auditing
@@ -141,7 +139,7 @@ interface ActivePosition {
 # Core
 PAPER_TRADING=true              # Must be false for live trading
 WALLET_PRIVATE_KEY_ENCRYPTED=   # Auto-managed by dashboard connect
-DATABASE_URL=                   # Supabase PostgreSQL
+DB_PATH=                        # PGlite file path (default data/sniper.pglite)
 
 # Trading
 BUY_AMOUNT_SOL=0.5
