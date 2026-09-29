@@ -5,12 +5,12 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc && pnpm --filter ./dashboard build",
+    "build": "tsc && pnpm -C dashboard build",
     "start": "node dist/index.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
-    "dashboard:dev": "pnpm --filter ./dashboard dev",
+    "dashboard:dev": "pnpm -C dashboard dev",
     "db:backfill-pnl": "tsx scripts/backfill-pnl.ts"
   },
   "dependencies": {

@@ -32,7 +32,7 @@ if ! command -v pnpm >/dev/null; then
   mkdir -p ~/bin && corepack enable --install-directory ~/bin && export PATH="$HOME/bin:$PATH"
 fi
 pnpm install --frozen-lockfile
-pnpm --filter ./dashboard install --frozen-lockfile
+pnpm -C dashboard install --frozen-lockfile
 node_modules/.bin/prisma generate
 pnpm build
 mkdir -p ~/.config/systemd/user
