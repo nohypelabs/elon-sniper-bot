@@ -15,6 +15,7 @@ import {
 import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
 import bs58 from 'bs58';
 import axios from 'axios';
+import { performance } from 'node:perf_hooks';
 import { logger } from '../utils/logger';
 import { CONFIG, SOL_MINT } from '../config';
 
@@ -28,6 +29,8 @@ export interface SwapResult {
   outputAmount: number;
   pricePerToken: number;
   error?: string;
+  /** perf.now() deltas around quote / submit / confirm. Paper paths leave it undefined. */
+  timings?: { quoteMs: number; sendMs: number; confirmMs: number };
 }
 
 export interface TokenSecurity {
@@ -160,6 +163,7 @@ export class GmgnSwap {
       const slippagePct = CONFIG.MAX_SLIPPAGE_BPS / 100; // BPS → percent
       const isBuySwap   = tokenIn === SOL_MINT;
       const fee         = priorityFeeSol ?? (isBuySwap ? CONFIG.PRIORITY_FEE_BUY_SOL : CONFIG.PRIORITY_FEE_SELL_SOL);
+      const quoteStart = performance.now();
       const routeResp = await axios.get(`${GMGN_BASE}/tx/get_swap_route`, {
         params: {
           token_in_address:  tokenIn,
@@ -175,6 +179,7 @@ export class GmgnSwap {
         headers: { 'x-route-key': CONFIG.GMGN_API_KEY },
         timeout: 10_000,
       });
+      const quoteMs = performance.now() - quoteStart;
 
       const route = routeResp.data?.data;
       if (!route?.raw_tx?.swapTransaction) {
@@ -190,11 +195,13 @@ export class GmgnSwap {
       const signedBase64 = Buffer.from(tx.serialize()).toString('base64');
 
       // Step 3: Submit
+      const sendStart = performance.now();
       const sendResp = await axios.post(
         `${GMGN_PROXY}/send_transaction`,
         { chain: 'sol', signedTx: signedBase64, isAntiMev: CONFIG.ANTI_MEV },
         { headers: { 'x-route-key': CONFIG.GMGN_API_KEY, 'Content-Type': 'application/json' }, timeout: 15_000 },
       );
+      const sendMs = performance.now() - sendStart;
 
       const signature = sendResp.data?.data?.hash || sendResp.data?.hash;
       if (!signature) {
@@ -204,7 +211,9 @@ export class GmgnSwap {
       logger.info(`⚡ [GMGN] TX sent: ${signature}`);
 
       // Step 4: Poll status
+      const confirmStart = performance.now();
       const confirmed = await this.pollStatus(signature);
+      const confirmMs = performance.now() - confirmStart;
       if (!confirmed) {
         return { success: false, txSignature: signature, inputAmount: 0, outputAmount: 0, pricePerToken: 0, error: 'TX not confirmed in time' };
       }
@@ -216,7 +225,7 @@ export class GmgnSwap {
         ? (inAmt / LAMPORTS_PER_SOL) / outAmt
         : (outAmt / LAMPORTS_PER_SOL) / inAmt;
 
-      return { success: true, txSignature: signature, inputAmount: inAmt, outputAmount: outAmt, pricePerToken };
+      return { success: true, txSignature: signature, inputAmount: inAmt, outputAmount: outAmt, pricePerToken, timings: { quoteMs, sendMs, confirmMs } };
 
     } catch (error) {
       const msg = (error as Error).message;

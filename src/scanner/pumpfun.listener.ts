@@ -8,6 +8,7 @@
  */
 
 import WebSocket from 'ws';
+import { performance } from 'node:perf_hooks';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { DevWalletChecker } from './dev-wallet.checker';
@@ -28,6 +29,12 @@ export interface NewPumpToken {
   bondingCurveKey: string;
   signature: string;
   timestamp: number;
+  /**
+   * Monotonic arrival stamp (performance.now()) taken when the WebSocket
+   * message is parsed — the true "token event received" time for latency
+   * traces. Optional so older producers/tests keep compiling.
+   */
+  receivedAtMono?: number;
 }
 
 type TokenCallback = (token: NewPumpToken) => Promise<void>;
@@ -135,8 +142,9 @@ export class PumpFunListener {
 
     this.ws.on('message', (data: WebSocket.RawData) => {
       try {
+        const receivedAtMono = performance.now();
         const msg = JSON.parse(data.toString());
-        this.handleMessage(msg);
+        this.handleMessage(msg, receivedAtMono);
       } catch { /* ignore malformed */ }
     });
 
@@ -158,7 +166,7 @@ export class PumpFunListener {
 
   // ─── Message handler ──────────────────────────────────────────
 
-  private async handleMessage(msg: any) {
+  private async handleMessage(msg: any, receivedAtMono?: number) {
     // Trade event (buy/sell) handling
     if (msg.mint && (msg.txType === 'buy' || msg.txType === 'sell')) {
       // Real-time price update for a subscribed (bought) token
@@ -233,6 +241,7 @@ export class PumpFunListener {
       bondingCurveKey: msg.bondingCurveKey || '',
       signature:       msg.signature || '',
       timestamp:       Date.now(),
+      receivedAtMono,
     };
 
     const reject = this.filter(token);

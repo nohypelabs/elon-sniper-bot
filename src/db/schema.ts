@@ -70,9 +70,32 @@ export const botEvents = pgTable(
   (t) => [index('BotEvent_createdAt_idx').on(t.createdAt), index('BotEvent_type_idx').on(t.type)],
 );
 
+export const latencyTraces = pgTable(
+  'LatencyTrace',
+  {
+    id: text('id')
+      .primaryKey()
+      .$defaultFn(() => randomUUID()),
+    kind: text('kind').notNull(),
+    tokenMint: text('tokenMint').notNull(),
+    symbol: text('symbol').notNull().default(''),
+    outcome: text('outcome'),
+    totalMs: doublePrecision('totalMs').notNull().default(0),
+    stages: jsonb('stages').$type<Record<string, number> | null>(),
+    segments: jsonb('segments').$type<Record<string, number> | null>(),
+    notes: jsonb('notes').$type<Record<string, number | string> | null>(),
+    createdAt: timestamp('createdAt', { withTimezone: true, mode: 'date' })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [index('LatencyTrace_createdAt_idx').on(t.createdAt), index('LatencyTrace_kind_idx').on(t.kind)],
+);
+
 export type Trade = typeof trades.$inferSelect;
 export type NewTrade = typeof trades.$inferInsert;
 export type Position = typeof positions.$inferSelect;
 export type NewPosition = typeof positions.$inferInsert;
 export type BotEvent = typeof botEvents.$inferSelect;
 export type NewBotEvent = typeof botEvents.$inferInsert;
+export type LatencyTrace = typeof latencyTraces.$inferSelect;
+export type NewLatencyTrace = typeof latencyTraces.$inferInsert;

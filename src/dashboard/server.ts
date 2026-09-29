@@ -9,12 +9,14 @@ import {
   listBuysForPairing,
   listBuysForStats,
   listEvents,
+  listLatencyTraces,
   listPositions,
   listSells,
   listSellsForPnl,
   listSellsForStats,
   listTrades,
 } from '../db/repo';
+import { eventLoopMonitor, latencyStats } from '../metrics/store';
 import { logger } from '../utils/logger';
 import { runBacktest } from '../backtest/runner';
 import { CONFIG } from '../config';
@@ -309,6 +311,21 @@ export async function startDashboardServer() {
     const limit = parseInt(c.req.query('limit') || '100');
     const events = await listEvents(limit);
     return c.json(events);
+  });
+
+  app.get('/api/latency', async c => {
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') || '50') || 50, 1), 200);
+    let recent: unknown[] = [];
+    try {
+      recent = await listLatencyTraces({ limit });
+    } catch {
+      recent = []; // DB down — still return in-memory stats
+    }
+    return c.json({
+      summary: latencyStats.summary(),
+      eventLoop: eventLoopMonitor.snapshot(),
+      recent,
+    });
   });
 
   app.post('/api/sell/:mint', async c => {

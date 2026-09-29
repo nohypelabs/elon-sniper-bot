@@ -27,6 +27,8 @@ export interface SwapResult {
   outputAmount: number;
   pricePerToken: number;
   error?: string;
+  /** Optional swap-phase timings (GMGN fills this; Jupiter left uninstrumented). */
+  timings?: { quoteMs: number; sendMs: number; confirmMs: number };
 }
 
 export class JupiterSwap {

@@ -1,6 +1,7 @@
 import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, ne, or } from 'drizzle-orm';
 import { ensureDb, type Db } from './client';
-import { botEvents, positions, trades, type NewPosition, type NewTrade } from './schema';
+import { botEvents, latencyTraces, positions, trades, type NewPosition, type NewTrade } from './schema';
+import type { Trace } from '../metrics/latency';
 
 async function handle(override?: Db): Promise<Db> {
   return override ?? ensureDb();
@@ -206,4 +207,40 @@ export async function insertEvent(
 export async function listEvents(limit: number, dbOverride?: Db) {
   const d = await handle(dbOverride);
   return d.select().from(botEvents).orderBy(desc(botEvents.createdAt)).limit(limit);
+}
+
+// ─── Latency traces ─────────────────────────────────────────────
+
+export async function insertLatencyTrace(trace: Trace, dbOverride?: Db) {
+  const d = await handle(dbOverride);
+  const outcome = trace.notes?.outcome;
+  const [row] = await d
+    .insert(latencyTraces)
+    .values({
+      kind: trace.kind,
+      tokenMint: trace.mint ?? trace.id.split(':')[0] ?? '',
+      symbol: trace.symbol ?? '',
+      outcome: typeof outcome === 'string' ? outcome : null,
+      totalMs: trace.totalMs,
+      stages: trace.stages,
+      segments: trace.segments,
+      notes: trace.notes,
+    })
+    .returning();
+  return row;
+}
+
+export async function listLatencyTraces(
+  opts: { limit: number; kind?: 'BUY' | 'SELL' },
+  dbOverride?: Db,
+) {
+  const d = await handle(dbOverride);
+  const base = d.select().from(latencyTraces);
+  if (opts.kind) {
+    return base
+      .where(eq(latencyTraces.kind, opts.kind))
+      .orderBy(desc(latencyTraces.createdAt))
+      .limit(opts.limit);
+  }
+  return base.orderBy(desc(latencyTraces.createdAt)).limit(opts.limit);
 }
