@@ -1,0 +1,3 @@
+# Dashboard is its own pnpm root (own lockfile), not part of the bot workspace.
+allowBuilds:
+  esbuild: true
