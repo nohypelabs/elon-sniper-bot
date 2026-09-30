@@ -1,12 +1,31 @@
 # Elon Sniper Bot — Progress Log
 
-Last updated: 2026-05-05
+Last updated: 2026-09-30
 
 ---
 
-## Status: PAPER TRADING — Backtest ready, go-live checklist below
+## Status: PAPER TRADING on the minipc — $100 paper account, $10 per snipe. LIVE is locked (LIVE_TRADING_ALLOWED).
 
 ---
+
+## Hardening log (2026-09-30)
+
+Built with several coding agents in parallel (opencode, Cline, one aborted freebuff run); every stage was reviewed and re-tested by the lead agent before commit.
+
+| Stage | What |
+|---|---|
+| 1 | Exit rules extracted to one pure `evaluateExit` (`src/strategy/exit-rules.ts`), shared by realtime callback and poll loop |
+| 2 | Dashboard: request bodies forwarded, auth module, CSRF/CSWSH origin guard |
+| 3 | Prisma + Supabase replaced by embedded PGlite via Drizzle (`data/sniper.pglite`, migrations in `drizzle/`) |
+| 4 | Testable approval gate (`BUY_APPROVAL_ENABLED`), entry re-priced from the live feed after approval |
+| 5 | Config edits validated (ranges, TP1 < TP2, atomic `.env` write) |
+| 6 | `/set`, `/preset`, `/config` as pure tested functions; `/config` shows the real strategy |
+| 7 | Latency/slippage instrumentation: `/latency`, `GET /api/latency`, event-loop lag, `LatencyTrace` table |
+| 8 | Paper account: `PAPER_STARTING_CAPITAL_USD` (100), `BUY_AMOUNT_USD` (10, min `MIN_SNIPE_USD`), ledger rebuilt from trades |
+| 9 | From an adversarial review: failed sells retry with backoff instead of bricking the position; moonbag remainder is trailed (`MOONBAG_TRAIL_PERCENT`); NaN safe; ghost placeholders fixed; restart recovery of open positions; LIVE lock; safe alert HTML; DB lock file |
+| e2e | `src/dashboard/server.e2e.test.ts` runs the real server against a temp DB (29 tests) |
+
+Known limits: paper fills use a fake constant price, so paper PnL ignores latency and slippage (use `/latency` before going live); a concurrent buy can pass `canAfford` twice before the debit; partial fills on live sells are not detected (remaining tokens assume a full fill); the wallet private key is still handled via the dashboard/`.env` (no HSM/keystore).
 
 ## Architecture
 

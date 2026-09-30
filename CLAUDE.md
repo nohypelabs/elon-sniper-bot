@@ -140,6 +140,15 @@ interface ActivePosition {
 PAPER_TRADING=true              # Must be false for live trading
 WALLET_PRIVATE_KEY_ENCRYPTED=   # Auto-managed by dashboard connect
 DB_PATH=                        # PGlite file path (default data/sniper.pglite)
+LIVE_TRADING_ALLOWED=false      # LIVE mode is refused (config, /live, startup) unless true
+PAPER_STARTING_CAPITAL_USD=100  # paper account start (converted to SOL once, stored in DB)
+BUY_AMOUNT_USD=0                # >0 = USD sizing (10..1000); 0 = use BUY_AMOUNT_SOL
+MIN_SNIPE_USD=10                # never buy below this USD value
+MOONBAG_TRAIL_PERCENT=30        # ratio trailing stop on the moonbag remainder
+TRAILING_TP_ENABLED=false       # trailing TP after TP1 (TRAILING_TP_DROP_PERCENT)
+BUY_APPROVAL_ENABLED=false      # Telegram approve/reject before each snipe
+DASHBOARD_PASSWORD=             # HTTP Basic auth; required for /tunnel
+DASHBOARD_ALLOWED_ORIGINS=      # extra allowed cross-site origins (e.g. Vite dev)
 
 # Trading
 BUY_AMOUNT_SOL=0.5
