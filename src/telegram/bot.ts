@@ -4,7 +4,8 @@
  * Commands:
  *   /sniper    - Show sniper status & active positions
  *   /sell      - Sell current position
- *   /config    - Show current config
+ *   /config    - Settings menu (tap buttons, type the number)
+ *   /config text - Show current config (plain-text summary)
  *   /set       - Change config at runtime (persists to .env)
  *   /preset    - Apply a config preset (e.g. lowrisk)
  *   Buy approval: BUY_APPROVAL_ENABLED=true asks Approve/Reject before each snipe
@@ -32,6 +33,9 @@ import {
 } from './config-commands';
 import { FoundToken } from '../scanner/token.finder';
 import { ApprovalGate } from './approval-gate';
+import { classifyUpdate } from './update-router';
+import { createMenuController } from './menu-controller';
+import { MenuSessions, type Screen } from './config-menu';
 
 const API = `https://api.telegram.org/bot${CONFIG.TELEGRAM_BOT_TOKEN}`;
 const ENABLED = !!(CONFIG.TELEGRAM_BOT_TOKEN && CONFIG.TELEGRAM_CHAT_ID);
@@ -168,6 +172,65 @@ async function answerCallback(callbackQueryId: string, text?: string): Promise<v
       text: text ?? '',
     });
   } catch { /* non-critical */ }
+}
+
+// ─── Settings menu (Stage 12B) ────────────────────────────────────
+// Pure menu core lives in config-menu.ts; update-router.ts classifies
+// updates and menu-controller.ts owns the menu flows. bot.ts only injects
+// the real Telegram I/O below.
+
+const menuSessions = new MenuSessions();
+
+type MenuController = ReturnType<typeof createMenuController>;
+let menuController: MenuController | null = null;
+
+function getMenuController(): MenuController {
+  if (!menuController) {
+    menuController = createMenuController({
+      chatId: CONFIG.TELEGRAM_CHAT_ID,
+      getConfig: () => CONFIG as unknown as Record<string, unknown>,
+      apply: tryApplyConfig,
+      sessions: menuSessions,
+      liveAllowed: () => CONFIG.LIVE_TRADING_ALLOWED === true,
+      sendScreen: (screen: Screen) => sendWithButtons(screen.text, screen.keyboard),
+      editScreen: (messageId: number, screen: Screen) => editScreen(messageId, screen),
+      sendText: async (html: string) => { await send(html); },
+      answer: (id: string, text?: string, alert?: boolean) => answerCb(id, text, alert),
+      log: (msg: string) => logger.warn(msg),
+    });
+  }
+  return menuController;
+}
+
+/**
+ * Edit the menu message in place. Never throws; maps Telegram's edit
+ * errors: identical content => 'unchanged', dead message => 'gone'
+ * (the controller then sends a fresh message), anything else => log a
+ * warning and report 'unchanged'.
+ */
+async function editScreen(messageId: number, screen: Screen): Promise<'edited' | 'unchanged' | 'gone'> {
+  if (!ENABLED) return 'unchanged';
+  try {
+    await axios.post(`${API}/editMessageText`, {
+      chat_id: CONFIG.TELEGRAM_CHAT_ID,
+      message_id: messageId,
+      text: screen.text,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: screen.keyboard },
+    });
+    return 'edited';
+  } catch (error) {
+    const resp = (error as AxiosError)?.response;
+    const data = resp?.data as { description?: unknown } | undefined;
+    const desc = typeof data?.description === 'string' ? data.description : '';
+    if (resp?.status === 400 && desc.includes('message is not modified')) return 'unchanged';
+    if (resp?.status === 400 && (desc.includes('message to edit not found') || desc.includes("can't be edited"))) {
+      return 'gone';
+    }
+    logger.warn(`Telegram editMessageText failed: ${resp?.status ?? 'network'}`);
+    return 'unchanged';
+  }
 }
 
 // ─── Alert functions ──────────────────────────────────────────────
@@ -414,18 +477,41 @@ async function pollLoop(): Promise<void> {
       for (const update of resp.data?.result ?? []) {
         pollingOffset = update.update_id + 1;
 
-        if (update.callback_query) {
+        // ── Stage 12B routing order (exactly): menu-callback =>
+        // controller.onCallback; approval/trade/other callbacks => existing
+        // handleCallback; command => controller.onCommand first, else the
+        // existing chain; plain text => controller.onText first, else ignore.
+        // classifyUpdate() is the first gate; the old String() comparisons
+        // below stay as a second check (defence in depth).
+        const routed = classifyUpdate(update, CONFIG.TELEGRAM_CHAT_ID);
+
+        if (routed.kind === 'menu-callback') {
           const cbChatId = String(update.callback_query.message?.chat?.id ?? '');
           if (cbChatId !== CONFIG.TELEGRAM_CHAT_ID) continue;
-          await handleCallback(update.callback_query);
+          await getMenuController().onCallback(routed);
           continue;
         }
 
-        const text: string = update.message?.text ?? '';
-        const chatId = String(update.message?.chat?.id ?? '');
-        if (chatId !== CONFIG.TELEGRAM_CHAT_ID) continue;
+        if (
+          routed.kind === 'approval-callback' ||
+          routed.kind === 'trade-callback' ||
+          routed.kind === 'other-callback'
+        ) {
+          if (update.callback_query) {
+            const cbChatId = String(update.callback_query.message?.chat?.id ?? '');
+            if (cbChatId !== CONFIG.TELEGRAM_CHAT_ID) continue;
+            await handleCallback(update.callback_query);
+          }
+          continue;
+        }
 
-        if (text === '/sniper' || text === '/status') {
+        if (routed.kind === 'command') {
+          const text: string = update.message?.text ?? '';
+          const chatId = String(update.message?.chat?.id ?? '');
+          if (chatId !== CONFIG.TELEGRAM_CHAT_ID) continue;
+          if (await getMenuController().onCommand(routed)) continue;
+
+          if (text === '/sniper' || text === '/status') {
           if (onStatusCommand) await send(onStatusCommand());
         } else if (text === '/sell') {
           if (onSellCommand) await onSellCommand();
@@ -467,7 +553,7 @@ async function pollLoop(): Promise<void> {
           await send(await startTunnel());
         } else if (text === '/tunnel stop') {
           await send(stopTunnel());
-        } else if (text === '/config') {
+        } else if (text === '/config text') {
           await send(renderConfig(CONFIG as any));
         } else if (text === '/set' || text.startsWith('/set ')) {
           await send(handleSetCommand(text.split(/\s+/).slice(1), { config: CONFIG as any, apply: tryApplyConfig }));
@@ -477,6 +563,7 @@ async function pollLoop(): Promise<void> {
           await send([
             `🤖 <b>Elon Sniper Bot</b>`,
             '',
+            `⚙️ /config - Menu pengaturan (ketuk tombol, ketik angkanya saja)`,
             `/sniper - Status & posisi aktif`,
             `/saldo - Cek saldo SOL`,
             `/pnl - Statistik profit/loss`,
@@ -489,11 +576,19 @@ async function pollLoop(): Promise<void> {
             `/paper - Switch ke PAPER mode`,
             `/tunnel - Start dashboard tunnel`,
             `/tunnel stop - Stop tunnel`,
-            `/config - Lihat konfigurasi`,
+            `/config text - Ringkasan konfigurasi (teks)`,
             `/set &lt;nama&gt; &lt;nilai&gt; - Ubah konfigurasi (tanpa buka .env)`,
             `/preset lowrisk - Terapkan mode low risk`,
             `/help - Pesan ini`,
           ].join('\n'));
+        }
+        }
+
+        if (routed.kind === 'text') {
+          const chatId = String(update.message?.chat?.id ?? '');
+          if (chatId !== CONFIG.TELEGRAM_CHAT_ID) continue;
+          if (await getMenuController().onText(routed)) continue;
+          // No legacy behaviour for plain text: ignore.
         }
       }
     } catch {
@@ -538,9 +633,13 @@ async function handleCallback(cbQuery: any): Promise<void> {
   await answerCb(cbId);
 }
 
-async function answerCb(id: string, text?: string): Promise<void> {
+async function answerCb(id: string, text?: string, alert?: boolean): Promise<void> {
   try {
-    await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: id, text: text ?? '' });
+    await axios.post(`${API}/answerCallbackQuery`, {
+      callback_query_id: id,
+      text: text ?? '',
+      show_alert: alert === true,
+    });
   } catch { /* non-critical */ }
 }
 
