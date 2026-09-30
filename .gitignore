@@ -16,3 +16,6 @@ data/*
 
 # Private wallet lists (Axiom exports, alpha watchlists)
 wallet-tracker.txt
+
+# local deploy target (host/port/key) - never commit
+deploy/local.env

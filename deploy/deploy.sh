@@ -3,13 +3,16 @@
 # Usage: deploy/deploy.sh [--no-restart]
 set -euo pipefail
 
-HOST="${DEPLOY_HOST:-dracarys@72.62.124.135}"
-PORT="${DEPLOY_PORT:-2222}"
-KEY="${DEPLOY_KEY:-$HOME/.ssh/id_claude_deploy}"
+cd "$(dirname "$0")/.."
+# Host/port/key live in deploy/local.env (git-ignored; the repo is public).
+[ -f deploy/local.env ] && set -a && . deploy/local.env && set +a
+: "${DEPLOY_HOST:?set DEPLOY_HOST in deploy/local.env (see deploy/local.env.example)}"
+HOST="$DEPLOY_HOST"
+PORT="${DEPLOY_PORT:-22}"
+KEY="${DEPLOY_KEY:?set DEPLOY_KEY in deploy/local.env}"
+KEY="${KEY/#\$HOME/$HOME}"
 DEST="${DEPLOY_DIR:-elon-sniper-bot}"     # relative to remote $HOME
 SSH=(ssh -i "$KEY" -o IdentitiesOnly=yes -p "$PORT")
-
-cd "$(dirname "$0")/.."
 
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "Working tree has uncommitted changes; deploy ships committed HEAD only." >&2
