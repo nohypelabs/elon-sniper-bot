@@ -21,6 +21,11 @@ function round6(n: number): number {
   return Math.round(n * 1_000_000) / 1_000_000;
 }
 
+/** Round UP to 6 decimals so a USD-sized buy is never a hair under the requested USD amount. */
+function ceil6(n: number): number {
+  return Math.ceil(n * 1_000_000 - 1e-9) / 1_000_000;
+}
+
 export function computeBuySol(opts: ComputeBuySolOpts): ComputeBuySolResult {
   const { buyAmountUsd, buyAmountSol, solPriceUsd, minSnipeUsd } = opts;
 
@@ -29,14 +34,17 @@ export function computeBuySol(opts: ComputeBuySolOpts): ComputeBuySolResult {
   }
 
   const rawSol = buyAmountUsd > 0 ? buyAmountUsd / solPriceUsd : buyAmountSol;
-  const sol = Number.isFinite(rawSol) ? round6(rawSol) : NaN;
+  // USD sizing rounds up (round6 could land at 9.99997 USD and fail the 10 USD minimum ~50% of the time);
+  // SOL sizing keeps plain rounding.
+  const sol = Number.isFinite(rawSol) ? (buyAmountUsd > 0 ? ceil6(rawSol) : round6(rawSol)) : NaN;
   if (!Number.isFinite(sol) || sol <= 0) {
     return { ok: false, reason: 'below_min_snipe' };
   }
 
   const min = Number.isFinite(minSnipeUsd) && minSnipeUsd > 0 ? minSnipeUsd : 0;
   const usd = sol * solPriceUsd;
-  if (usd < min - 1e-9) {
+  // 1e-6 USD tolerance absorbs float error only; it is far below the 6-decimal SOL granularity.
+  if (usd < min - 1e-6) {
     return { ok: false, reason: 'below_min_snipe' };
   }
 
