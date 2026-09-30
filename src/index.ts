@@ -254,7 +254,9 @@ class ElonSniper {
     logger.info(`  Swap: ${CONFIG.GMGN_API_KEY ? 'GMGN (Anti-MEV)' : 'Jupiter (fallback)'}`);
     logger.info(`  Tweet Snipe: ON`);
     logger.info(`  PumpFun Snipe: ${CONFIG.PUMP_SNIPE_ENABLED ? 'ON' : 'OFF'}`);
-    logger.info(`  Buy Amount: ${CONFIG.BUY_AMOUNT_SOL} SOL`);
+    logger.info(CONFIG.BUY_AMOUNT_USD > 0
+      ? `  Buy Amount: $${CONFIG.BUY_AMOUNT_USD} per trade (USD sizing; BUY_AMOUNT_SOL is ignored)`
+      : `  Buy Amount: ${CONFIG.BUY_AMOUNT_SOL} SOL`);
     if (CONFIG.PAPER_TRADING) {
       const buyUsd = CONFIG.BUY_AMOUNT_USD > 0
         ? CONFIG.BUY_AMOUNT_USD
