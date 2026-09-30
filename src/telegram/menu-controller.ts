@@ -144,17 +144,50 @@ export function createMenuController(deps: MenuControllerDeps): {
     }
     if (result.edit) {
       const edit = result.edit;
-      try {
-        const status = await deps.editScreen(edit.messageId, edit.screen);
-        if (status === 'gone') {
+      if (result.feedback === 'bottom') {
+        let newId: number | null = null;
+        try {
+          newId = await deps.sendScreen(edit.screen);
+        } catch {
+          log('menu onText send failed');
+          newId = null;
+        }
+        if (typeof newId === 'number') {
           try {
-            await deps.sendScreen(edit.screen);
+            await deps.editScreen(edit.messageId, {
+              text: result.staleNote ?? '✅ Selesai.',
+              keyboard: [],
+            });
           } catch {
-            log('menu onText resend failed');
+            log('menu onText stale edit failed');
+          }
+        } else {
+          try {
+            const status = await deps.editScreen(edit.messageId, edit.screen);
+            if (status === 'gone') {
+              try {
+                await deps.sendScreen(edit.screen);
+              } catch {
+                log('menu onText resend failed');
+              }
+            }
+          } catch {
+            log('menu onText edit failed');
           }
         }
-      } catch {
-        log('menu onText edit failed');
+      } else {
+        try {
+          const status = await deps.editScreen(edit.messageId, edit.screen);
+          if (status === 'gone') {
+            try {
+              await deps.sendScreen(edit.screen);
+            } catch {
+              log('menu onText resend failed');
+            }
+          }
+        } catch {
+          log('menu onText edit failed');
+        }
       }
     }
     return true;

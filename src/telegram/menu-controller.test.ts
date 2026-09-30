@@ -142,12 +142,21 @@ describe('menu-controller full conversation', () => {
     assert.strictEqual(sessions.getInput('C1')?.key, 'BUY_AMOUNT_USD');
     assert.strictEqual(await c.onText(txt('15')), true);
     assert.strictEqual(config['BUY_AMOUNT_USD'], 15);
-    // The pure core answers numeric input with a menu edit, never a text
-    // reply (TextResult.replies is empty on every path), so no sendText.
+    // 12C: success goes to the bottom — one fresh send plus a stale note
+    // on the old prompt, never an in-place group edit.
     assert.strictEqual(f.texts.length, 0);
-    const last = f.edits[f.edits.length - 1].screen;
-    assert.ok(last.text.includes('✅'));
-    assert.ok(keyboardHas(last, 'cfg:u'));
+    assert.strictEqual(f.sent.length, 1);
+    assert.ok(f.sent[0].text.includes('✅'));
+    assert.ok(f.sent[0].text.includes('Ukuran & Exit'));
+    assert.ok(keyboardHas(f.sent[0], 'cfg:u'));
+    assert.strictEqual(f.edits.length, 2);
+    const stale = f.edits[f.edits.length - 1];
+    assert.strictEqual(stale.messageId, 101);
+    assert.strictEqual(stale.screen.text, '✅ Tersimpan. Menu terbaru ada di pesan di bawah.');
+    assert.deepStrictEqual(stale.screen.keyboard, []);
+    for (const e of f.edits) {
+      assert.notStrictEqual(e.screen.text, f.sent[0].text);
+    }
     assert.strictEqual(sessions.getInput('C1'), null);
     assert.deepStrictEqual(sessions.getUndo('C1')?.items, [
       { key: 'BUY_AMOUNT_USD', before: 10, after: 15 },
@@ -163,18 +172,32 @@ describe('menu-controller full conversation', () => {
     assert.strictEqual(config['BUY_AMOUNT_USD'], 15);
     assert.strictEqual(sessions.getInput('C1')?.key, 'BUY_AMOUNT_USD');
     assert.ok(f.edits[f.edits.length - 1].screen.text.includes('Ketik angka saja'));
+    assert.strictEqual(f.sent.length, 0);
+    assert.strictEqual(f.texts.length, 1);
+    assert.ok(f.texts[0].startsWith('❌'));
+    assert.ok(f.texts[0].includes('Ketik angka saja'));
+    assert.strictEqual(f.edits[f.edits.length - 1].messageId, 101);
   });
 
   it("'100' asks confirm, cfg:cy applies, cfg:u undoes", async () => {
     const config = { ...sampleConfig(), BUY_AMOUNT_USD: 15 };
     const sessions = new MenuSessions();
     const { c, f } = makeController('C1', config, sessions);
-    await c.onCallback(cb(USD, 101));
+    await c.onCallback(cb(USD, 50));
     assert.strictEqual(await c.onText(txt('100')), true);
     assert.deepStrictEqual(sessions.getConfirm('C1')?.kind, 'value');
-    assert.ok(f.edits[f.edits.length - 1].screen.text.includes('Yakin'));
+    // 12C: confirm screen goes to the bottom with its buttons intact.
+    assert.strictEqual(f.sent.length, 1);
+    assert.ok(f.sent[0].text.includes('Yakin'));
+    assert.ok(keyboardHas(f.sent[0], 'cfg:cy'));
+    const stale = f.edits[f.edits.length - 1];
+    assert.strictEqual(stale.messageId, 50);
+    assert.strictEqual(stale.screen.text, '⚠️ Menunggu konfirmasi di pesan di bawah.');
+    assert.deepStrictEqual(stale.screen.keyboard, []);
+    // Confirm from the NEW message id applies.
     await c.onCallback(cb('cfg:cy', 101, 'cb2'));
     assert.strictEqual(config['BUY_AMOUNT_USD'], 100);
+    assert.strictEqual(f.edits[f.edits.length - 1].messageId, 101);
     assert.ok(f.edits[f.edits.length - 1].screen.text.includes('✅'));
     await c.onCallback(cb('cfg:u', 101, 'cb3'));
     assert.strictEqual(config['BUY_AMOUNT_USD'], 15);
@@ -280,5 +303,126 @@ describe('menu-controller full conversation', () => {
     assert.strictEqual(await c.onText(cmd('config')), false);
     await c.onCallback(txt('15'));
     assert.deepStrictEqual([f.sent.length, f.edits.length, f.answers.length, f.texts.length], [0, 0, 0, 0]);
+  });
+});
+
+describe('menu-controller 12C bottom feedback', () => {
+  it("'batal' edits the old prompt in place with no send", async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const { c, f } = makeController('C1', config, sessions);
+    await c.onCallback(cb(USD, 101));
+    assert.strictEqual(await c.onText(txt('batal')), true);
+    assert.strictEqual(f.sent.length, 0);
+    assert.strictEqual(f.texts.length, 0);
+    assert.strictEqual(f.edits.length, 2);
+    const last = f.edits[f.edits.length - 1];
+    assert.strictEqual(last.messageId, 101);
+    assert.ok(last.screen.text.includes('Ukuran & Exit'));
+  });
+
+  it('sendScreen null falls back to in-place edit', async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const fx = makeFakes();
+    const origSend = fx.sendScreen;
+    fx.sendScreen = async (screen: Screen): Promise<number | null> => {
+      fx.events.push('send');
+      fx.sent.push(screen);
+      return null;
+    };
+    void origSend;
+    const { c, f } = makeController('C1', config, sessions, fx);
+    await c.onCallback(cb(USD, 101));
+    assert.strictEqual(await c.onText(txt('15')), true);
+    assert.strictEqual(config['BUY_AMOUNT_USD'], 15);
+    assert.strictEqual(f.sent.length, 1);
+    assert.strictEqual(f.edits.length, 2);
+    const last = f.edits[f.edits.length - 1];
+    assert.strictEqual(last.messageId, 101);
+    assert.ok(last.screen.text.includes('✅'));
+    assert.ok(last.screen.text.includes('Ukuran & Exit'));
+  });
+
+  it('sendScreen throwing falls back to in-place edit', async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const fx = makeFakes();
+    fx.sendScreen = async (_screen: Screen): Promise<number | null> => {
+      fx.events.push('send');
+      throw new Error('send boom');
+    };
+    const { c, f, logs } = makeController('C1', config, sessions, fx);
+    await c.onCallback(cb(USD, 101));
+    assert.strictEqual(await c.onText(txt('15')), true);
+    assert.strictEqual(config['BUY_AMOUNT_USD'], 15);
+    const last = f.edits[f.edits.length - 1];
+    assert.strictEqual(last.messageId, 101);
+    assert.ok(last.screen.text.includes('✅'));
+    assert.ok(last.screen.text.includes('Ukuran & Exit'));
+    assert.ok(logs.length >= 1);
+  });
+
+  it("stale-note edit returning 'gone' never escapes and sends nothing more", async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const fx = makeFakes();
+    let calls = 0;
+    const realEdit = fx.editScreen;
+    void realEdit;
+    fx.editScreen = async (messageId: number, screen: Screen): Promise<'edited' | 'unchanged' | 'gone'> => {
+      calls += 1;
+      fx.events.push('edit');
+      if (calls === 1) {
+        fx.edits.push({ messageId, screen });
+        return 'edited';
+      }
+      fx.edits.push({ messageId, screen });
+      return 'gone';
+    };
+    const { c, f } = makeController('C1', config, sessions, fx);
+    await c.onCallback(cb(USD, 101));
+    assert.strictEqual(await c.onText(txt('15')), true);
+    assert.strictEqual(f.sent.length, 1);
+    assert.strictEqual(f.edits.length, 2);
+    assert.strictEqual(f.edits[1].screen.text, '✅ Tersimpan. Menu terbaru ada di pesan di bawah.');
+  });
+
+  it('stale-note edit throwing never escapes and sends nothing more', async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const fx = makeFakes();
+    let calls = 0;
+    fx.editScreen = async (messageId: number, screen: Screen): Promise<'edited' | 'unchanged' | 'gone'> => {
+      calls += 1;
+      fx.events.push('edit');
+      if (calls === 1) {
+        fx.edits.push({ messageId, screen });
+        return 'edited';
+      }
+      throw new Error('stale boom');
+    };
+    const { c, f, logs } = makeController('C1', config, sessions, fx);
+    await c.onCallback(cb(USD, 101));
+    assert.strictEqual(await c.onText(txt('15')), true);
+    assert.strictEqual(f.sent.length, 1);
+    assert.strictEqual(f.edits.length, 1);
+    assert.ok(logs.length >= 1);
+  });
+
+  it('undo on the NEW message id works and edits the new message', async () => {
+    const config = { ...sampleConfig() };
+    const sessions = new MenuSessions();
+    const { c, f } = makeController('C1', config, sessions);
+    await c.onCallback(cb(USD, 50));
+    assert.strictEqual(await c.onText(txt('15')), true);
+    assert.strictEqual(f.sent.length, 1);
+    const stored = sessions.getUndo('C1');
+    assert.ok(stored !== null);
+    assert.strictEqual(stored.messageId, 50);
+    await c.onCallback(cb('cfg:u', 101, 'cbU'));
+    assert.strictEqual(config['BUY_AMOUNT_USD'], 10);
+    assert.strictEqual(f.edits[f.edits.length - 1].messageId, 101);
+    assert.ok(f.edits[f.edits.length - 1].screen.text.includes('dikembalikan'));
   });
 });

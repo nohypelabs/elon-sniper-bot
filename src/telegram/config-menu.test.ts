@@ -407,6 +407,104 @@ describe('flows', () => {
   });
 });
 
+describe('12C typed-input feedback placement', () => {
+  it('success uses bottom feedback with stale note', () => {
+    const { ctx, sessions, config } = ctxWith(flowConfig());
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('15', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'bottom');
+    assert.equal(r.staleNote, '✅ Tersimpan. Menu terbaru ada di pesan di bawah.');
+    assert.deepEqual(r.replies, []);
+    assert.ok(r.edit);
+    assert.ok(r.edit.screen.text.includes('✅'));
+    assert.equal(config['BUY_AMOUNT_USD'], 15);
+    assert.equal(sessions.getInput('c1'), null);
+  });
+
+  it('confirm-needed uses bottom feedback with waiting note', () => {
+    const { ctx } = ctxWith(flowConfig());
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('100', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'bottom');
+    assert.equal(r.staleNote, '⚠️ Menunggu konfirmasi di pesan di bawah.');
+    assert.deepEqual(r.replies, []);
+    assert.ok(r.edit?.screen.text.includes('Nilai di luar kebiasaan'));
+  });
+
+  it('parse error uses edit feedback with error reply', () => {
+    const { ctx, sessions } = ctxWith(flowConfig());
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('abc', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'edit');
+    assert.equal(r.staleNote, undefined);
+    assert.equal(r.replies.length, 1);
+    assert.equal(r.replies[0], '❌ Ketik angka saja, mis. 15');
+    assert.ok(r.edit?.screen.text.startsWith('❌'));
+    assert.equal(r.edit?.screen.text.split('\n')[0], r.replies[0]);
+    assert.ok(!r.replies[0].includes('<') && !r.replies[0].includes('>'));
+    assert.ok(sessions.getInput('c1') !== null);
+  });
+
+  it('range error uses edit feedback with error reply incl Rentang', () => {
+    const { ctx, sessions } = ctxWith(flowConfig());
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('9999', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'edit');
+    assert.equal(r.replies.length, 1);
+    assert.ok(r.replies[0].startsWith('❌'));
+    assert.ok(r.replies[0].includes('Rentang:'));
+    assert.ok(!r.replies[0].includes('<') && !r.replies[0].includes('>'));
+    assert.ok(r.edit?.screen.text.startsWith(r.replies[0]));
+    assert.ok(r.edit?.screen.text.includes('Rentang:'));
+    assert.ok(sessions.getInput('c1') !== null);
+  });
+
+  it('apply rejection uses edit feedback with escaped error reply', () => {
+    const config = flowConfig();
+    const sessions = new MenuSessions();
+    const evil = 'gagal <b>&"';
+    const ctx: MenuCtx = { chatId: 'c1', messageId: 7, config, apply: () => evil, sessions };
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('15', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'edit');
+    assert.equal(r.replies.length, 1);
+    assert.equal(r.replies[0], '❌ gagal &lt;b&gt;&amp;&quot;');
+    assert.ok(!r.replies[0].includes('<b>'));
+    assert.equal(r.edit?.screen.text.split('\n')[0], r.replies[0]);
+    assert.ok(sessions.getInput('c1') !== null);
+  });
+
+  it('cancel uses edit feedback with no replies', () => {
+    const { ctx, sessions } = ctxWith(flowConfig());
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r = handleConfigText('batal', ctx);
+    assert.equal(r.consumed, true);
+    assert.equal(r.feedback, 'edit');
+    assert.equal(r.staleNote, undefined);
+    assert.deepEqual(r.replies, []);
+    assert.ok(r.edit);
+    assert.equal(sessions.getInput('c1'), null);
+  });
+
+  it('consumed:false results carry no feedback', () => {
+    const { ctx } = ctxWith(flowConfig());
+    const r1 = handleConfigText('15', ctx);
+    assert.equal(r1.consumed, false);
+    assert.ok(!('feedback' in r1));
+    assert.ok(!('staleNote' in r1));
+    handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, ctx);
+    const r2 = handleConfigText('/set buy 1', ctx);
+    assert.equal(r2.consumed, false);
+    assert.ok(!('feedback' in r2));
+    assert.ok(!('staleNote' in r2));
+  });
+});
+
 describe('golden snapshot', () => {
   it('matches src/telegram/__golden__/config-menu-screens.txt byte-for-byte', () => {
     const goldenPath = path.join(process.cwd(), 'src', 'telegram', '__golden__', 'config-menu-screens.txt');

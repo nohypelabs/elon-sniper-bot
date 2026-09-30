@@ -824,6 +824,8 @@ export interface TextResult {
   consumed: boolean;
   replies: string[];
   edit?: { messageId: number; screen: Screen };
+  feedback?: 'edit' | 'bottom';
+  staleNote?: string;
 }
 
 const CANCEL_RE = /^(batal|cancel)$/i;
@@ -840,24 +842,24 @@ export function handleConfigText(text: string, ctx: MenuCtx): TextResult {
   const trimmed = text.trim();
   if (CANCEL_RE.test(trimmed)) {
     sessions.clearInput(chatId);
-    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderGroup(groupOf(key), config) } };
+    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderGroup(groupOf(key), config) }, feedback: 'edit' };
   }
   const parsed = parseNumericInput(key, trimmed);
   if (!parsed.ok) {
     sessions.setInput(chatId, key, pending.messageId);
-    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderPrompt(key, config, { error: parsed.error }) } };
+    return { consumed: true, replies: [`❌ ${escapeHtml(parsed.error)}`], edit: { messageId: pending.messageId, screen: renderPrompt(key, config, { error: parsed.error }) }, feedback: 'edit' };
   }
   const comfort = comfortRange(key);
   if (comfort && (parsed.display < comfort[0] || parsed.display > comfort[1])) {
     sessions.clearInput(chatId);
     sessions.setConfirm(chatId, { kind: 'value', key, value: parsed.stored, messageId: pending.messageId });
-    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderConfirmValue(key, config[key], parsed.stored) } };
+    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderConfirmValue(key, config[key], parsed.stored) }, feedback: 'bottom', staleNote: '⚠️ Menunggu konfirmasi di pesan di bawah.' };
   }
   const before: unknown = config[key];
   const err = ctx.apply({ [key]: parsed.stored });
   if (err) {
     sessions.setInput(chatId, key, pending.messageId);
-    return { consumed: true, replies: [], edit: { messageId: pending.messageId, screen: renderPrompt(key, config, { error: err }) } };
+    return { consumed: true, replies: [`❌ ${escapeHtml(err)}`], edit: { messageId: pending.messageId, screen: renderPrompt(key, config, { error: err }) }, feedback: 'edit' };
   }
   sessions.clearInput(chatId);
   sessions.setUndo(chatId, [{ key, before, after: parsed.stored }], pending.messageId);
@@ -865,6 +867,8 @@ export function handleConfigText(text: string, ctx: MenuCtx): TextResult {
     consumed: true,
     replies: [],
     edit: { messageId: pending.messageId, screen: renderGroup(groupOf(key), config, successBannerSingle(key, before, parsed.stored)) },
+    feedback: 'bottom',
+    staleNote: '✅ Tersimpan. Menu terbaru ada di pesan di bawah.',
   };
 }
 
