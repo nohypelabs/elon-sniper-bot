@@ -24,3 +24,22 @@ Logs: `journalctl --user -u minipc-monitor.service -f`. Dry run: `MM_DRY_RUN=1 ~
   always-on host (e.g. a VPS joined to the same tailnet).
 - Telegram sends reuse the sniper bot's token (sendMessage only; it does not conflict with the bot's getUpdates polling).
 - A network outage on the *monitor's* side looks like a minipc outage; you get a recovery message when it clears.
+
+---
+# Push mode (dead-man switch), recommended for 24/7
+
+The pull monitor above only works while the watching machine is awake. **Push mode** inverts it: the
+monitored host sends a heartbeat every minute to an always-on watcher (a VPS); the watcher alerts when heartbeats
+stop (host dead, offline or hung) or when the reported health is bad (service inactive, bot log stale, disk >= 90 %,
+available memory < 250 MB). The watcher stores no credentials for the monitored host.
+
+- `push/mm-heartbeat.sh` (+ `.service`/`.timer`): runs on the monitored host, pipes a small status block over SSH.
+- `push/mm-hb-recv.sh`: installed on the watcher as the **forced command** of a dedicated key
+  (`restrict,command="/usr/local/bin/mm-hb-recv"`): that key can only overwrite one status file (max 2 KiB), no shell.
+- `push/mm-watch.sh`: runs on the watcher every minute (systemd timer as an unprivileged user).
+  Dead = no heartbeat for `MM_DEAD_SEC` (180 s); degraded alerts need `MM_DEGRADED_RUNS` (2) consecutive bad reports;
+  first heartbeat gets a 10 minute grace after install; reminders every `MM_REMIND_MIN` (30) minutes; recovery message.
+
+Config never goes in git: `~/.config/mm-heartbeat/env` (host side: `MM_WATCHER`, `MM_KEY`, `MM_SERVICE`) and
+`/etc/mm-watch/env` (watcher side: `MM_TG_TOKEN`, `MM_TG_CHAT`, `MM_NAME`).
+Test the alert path: `sudo -u minimon MM_WATCH_ENV=/etc/mm-watch/env /usr/local/bin/mm-watch.sh --test`.

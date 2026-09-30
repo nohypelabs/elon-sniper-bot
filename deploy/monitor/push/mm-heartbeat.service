@@ -1,0 +1,7 @@
+[Unit]
+Description=Push a health heartbeat to the watcher
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/mm-heartbeat.sh
+TimeoutStartSec=30
