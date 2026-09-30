@@ -1,0 +1,221 @@
+=== main ===
+⚙️ <b>Pengaturan Sniper</b>
+📝 Mode <b>PAPER</b> · 💵 Beli <b>$10</b> / trade
+
+🎯 Exit  TP1 <b>+30%</b> (jual 80%) · TP2 <b>+50%</b> · SL <b>−25%</b>
+🌙 Moonbag <b>25%</b> · trail <b>30%</b>
+🔎 Entry  maks <b>3</b> posisi · hold maks <b>30</b> mnt · dev buy <b>0,5</b>–<b>3</b> SOL
+🛡 Fitur  Security ✅ · Trailing TP ⬜ · Approval ⬜ · Auto sell ✅
+
+<i>Pilih kategori, lalu ketuk setelan yang mau diubah.</i>
+---
+[💰 Ukuran & Exit] [⛽ Eksekusi & Biaya]
+[🔎 Filter Entry] [🛡 Fitur ON/OFF]
+[📦 Preset] [❓ Bantuan]
+[🔄 Segarkan]
+callbacks: cfg:g:size | cfg:g:exec | cfg:g:entry | cfg:g:features | cfg:p | cfg:h | cfg:r
+
+=== main-moonbag-off ===
+⚙️ <b>Pengaturan Sniper</b>
+📝 Mode <b>PAPER</b> · 💵 Beli <b>$10</b> / trade
+
+🎯 Exit  TP1 <b>+30%</b> (jual 80%) · TP2 <b>+50%</b> · SL <b>−25%</b>
+🌙 Moonbag <b>OFF</b>
+🔎 Entry  maks <b>3</b> posisi · hold maks <b>30</b> mnt · dev buy <b>0,5</b>–<b>3</b> SOL
+🛡 Fitur  Security ✅ · Trailing TP ⬜ · Approval ⬜ · Auto sell ✅
+
+<i>Pilih kategori, lalu ketuk setelan yang mau diubah.</i>
+---
+[💰 Ukuran & Exit] [⛽ Eksekusi & Biaya]
+[🔎 Filter Entry] [🛡 Fitur ON/OFF]
+[📦 Preset] [❓ Bantuan]
+[🔄 Segarkan]
+callbacks: cfg:g:size | cfg:g:exec | cfg:g:entry | cfg:g:features | cfg:p | cfg:h | cfg:r
+
+=== main-live ===
+⚙️ <b>Pengaturan Sniper</b>
+🔴 Mode <b>LIVE</b> · 💵 Beli <b>$10</b> / trade
+
+🎯 Exit  TP1 <b>+30%</b> (jual 80%) · TP2 <b>+50%</b> · SL <b>−25%</b>
+🌙 Moonbag <b>25%</b> · trail <b>30%</b>
+🔎 Entry  maks <b>3</b> posisi · hold maks <b>30</b> mnt · dev buy <b>0,5</b>–<b>3</b> SOL
+🛡 Fitur  Security ✅ · Trailing TP ⬜ · Approval ⬜ · Auto sell ✅
+
+<i>Pilih kategori, lalu ketuk setelan yang mau diubah.</i>
+---
+[💰 Ukuran & Exit] [⛽ Eksekusi & Biaya]
+[🔎 Filter Entry] [🛡 Fitur ON/OFF]
+[📦 Preset] [❓ Bantuan]
+[🔄 Segarkan]
+callbacks: cfg:g:size | cfg:g:exec | cfg:g:entry | cfg:g:features | cfg:p | cfg:h | cfg:r
+
+=== group-size ===
+💰 <b>Ukuran & Exit</b>
+Atur modal dan target keluar.
+<i>Tersembunyi karena fitur terkait OFF: Beli SOL</i>
+---
+[💵 Beli USD · $10] [🛑 Stop Loss · −25%]
+[🎯 TP1 Profit · +30%] [✂️ TP1 Jual · 80%]
+[🚀 TP2 Profit · +50%]
+[⬅️ Menu]
+callbacks: cfg:k:1 | cfg:k:3 | cfg:k:4 | cfg:k:5 | cfg:k:6 | cfg:m
+
+=== group-exec ===
+⛽ <b>Eksekusi & Biaya</b>
+Biaya, slippage, dan eksekusi.
+---
+[📉 Slippage · 2%] [⛽ Fee Beli · 0,0000712 SOL]
+[🧾 Fee Jual · 0,0000712 SOL] [🧮 Fee Maks · 0,00009 SOL]
+[✅ Auto Sell] [⬜ Anti MEV]
+[⬅️ Menu]
+callbacks: cfg:k:2 | cfg:k:9 | cfg:k:10 | cfg:k:11 | cfg:t:18 | cfg:t:19 | cfg:m
+
+=== group-entry ===
+🔎 <b>Filter Entry</b>
+Saring token sebelum dibeli.
+---
+[📦 Maks Posisi · 3] [⌛ Hold Maks · 30 mnt]
+[🟢 Dev Min · 0,5 SOL] [🔴 Dev Maks · 3 SOL]
+[📊 MCap Min · 30 SOL] [📈 MCap Maks · 100 SOL]
+[✅ Security]
+[⬅️ Menu]
+callbacks: cfg:k:12 | cfg:k:13 | cfg:k:14 | cfg:k:15 | cfg:k:16 | cfg:k:17 | cfg:t:21 | cfg:m
+
+=== group-features ===
+🛡 <b>Fitur ON/OFF</b>
+Nyalakan atau matikan fitur.
+<i>Tersembunyi karena fitur terkait OFF: Trail Drop, Tunggu Approve</i>
+---
+[🌙 Porsi Moonbag · 25%] [🌠 Trail Moonbag · 30%]
+[✅ Moonbag] [⬜ Trailing TP]
+[⬜ Approval]
+[⬅️ Menu]
+callbacks: cfg:k:7 | cfg:k:8 | cfg:t:20 | cfg:t:22 | cfg:t:24 | cfg:m
+
+=== group-size-usd-off ===
+💰 <b>Ukuran & Exit</b>
+Atur modal dan target keluar.
+---
+[💰 Beli SOL · 0,05 SOL] [💵 Beli USD · $0]
+[🛑 Stop Loss · −25%] [🎯 TP1 Profit · +30%]
+[✂️ TP1 Jual · 80%] [🚀 TP2 Profit · +50%]
+[⬅️ Menu]
+callbacks: cfg:k:0 | cfg:k:1 | cfg:k:3 | cfg:k:4 | cfg:k:5 | cfg:k:6 | cfg:m
+
+=== prompt-buy-usd ===
+💵 <b>Beli USD</b>
+Sekarang: <b>$10</b>
+Rentang: <b>$10 – $1.000</b>
+<i>Jumlah beli per trade dalam USD.</i>
+
+✏️ Ketik angkanya saja (mis. <code>20</code>) atau pilih cepat.
+⏱ Berlaku 2 menit · ketik <code>batal</code> untuk keluar
+---
+[✓ $10] [$15] [$20] [$25]
+[⬅️ Kembali]
+callbacks: cfg:q:1:0 | cfg:q:1:1 | cfg:q:1:2 | cfg:q:1:3 | cfg:g:size
+
+=== prompt-slippage ===
+📉 <b>Slippage</b>
+Sekarang: <b>2%</b>
+Rentang: <b>0,01% – 25%</b>
+<i>Toleransi selisih harga saat eksekusi beli.</i>
+
+✏️ Ketik angkanya saja (mis. <code>5</code>) atau pilih cepat.
+⏱ Berlaku 2 menit · ketik <code>batal</code> untuk keluar
+---
+[1%] [✓ 2%] [5%] [10%]
+[⬅️ Kembali]
+callbacks: cfg:q:2:0 | cfg:q:2:1 | cfg:q:2:2 | cfg:q:2:3 | cfg:g:exec
+
+=== prompt-hold ===
+⌛ <b>Hold Maks</b>
+Sekarang: <b>30 mnt</b>
+Rentang: <b>0 mnt – 1.440 mnt</b>
+<i>Lama pegang posisi sebelum jual otomatis.</i>
+
+✏️ Ketik angkanya saja (mis. <code>15</code>) atau pilih cepat.
+⏱ Berlaku 2 menit · ketik <code>batal</code> untuk keluar
+---
+[5 mnt] [10 mnt] [15 mnt] [✓ 30 mnt]
+[⬅️ Kembali]
+callbacks: cfg:q:13:0 | cfg:q:13:1 | cfg:q:13:2 | cfg:q:13:3 | cfg:g:entry
+
+=== prompt-with-error ===
+❌ Ketik angka saja, mis. 15
+💵 <b>Beli USD</b>
+Sekarang: <b>$10</b>
+Rentang: <b>$10 – $1.000</b>
+<i>Jumlah beli per trade dalam USD.</i>
+
+✏️ Ketik angkanya saja (mis. <code>20</code>) atau pilih cepat.
+⏱ Berlaku 2 menit · ketik <code>batal</code> untuk keluar
+---
+[✓ $10] [$15] [$20] [$25]
+[⬅️ Kembali]
+callbacks: cfg:q:1:0 | cfg:q:1:1 | cfg:q:1:2 | cfg:q:1:3 | cfg:g:size
+
+=== confirm-value ===
+⚠️ <b>Nilai di luar kebiasaan</b>
+💵 Beli USD: $10 → <b>$100</b>
+Kisaran yang biasa dipakai: $10 – $25.
+Yakin menerapkannya?
+---
+[✅ Ya, terapkan] [✏️ Ketik ulang]
+[↩️ Batal]
+callbacks: cfg:cy | cfg:cr | cfg:x
+
+=== confirm-toggle-off ===
+⚠️ <b>Matikan Security?</b>
+Token honeypot tidak lagi disaring sebelum beli.
+---
+[✅ Ya, matikan]
+[↩️ Batal]
+callbacks: cfg:cy | cfg:x
+
+=== presets ===
+📦 <b>Preset</b>
+<i>Pilih preset untuk pratinjau sebelum diterapkan.</i>
+---
+[📦 lowrisk]
+[⬅️ Menu]
+callbacks: cfg:pp:0 | cfg:m
+
+=== preset-preview ===
+📦 <b>Preset lowrisk</b>
+⌛ Hold Maks: 30 mnt → <b>5 mnt</b>
+---
+[✅ Terapkan] [↩️ Batal]
+callbacks: cfg:pa:0 | cfg:p
+
+=== preset-preview-nochange ===
+📦 <b>Preset lowrisk</b>
+Tidak ada yang berubah (sudah sesuai preset).
+---
+[↩️ Kembali]
+callbacks: cfg:p
+
+=== help ===
+❓ <b>Bantuan Pengaturan</b>
+1️⃣ Ketuk setelan, lalu ketik angkanya saja.
+🔀 Ketuk tombol ✅/⬜ untuk nyala/mati.
+↩️ Perubahan bisa diurungkan 5 menit.
+⚠️ Nilai tak biasa minta konfirmasi dulu.
+⌨️ Ketik <code>batal</code> untuk keluar.
+🔧 <code>/set</code> dan <code>/preset</code> tetap bisa dipakai.
+---
+[⬅️ Menu]
+callbacks: cfg:m
+
+=== group-size-with-banner-and-undo ===
+✅ <b>Beli USD</b>: $10 → <b>$15</b>
+💰 <b>Ukuran & Exit</b>
+Atur modal dan target keluar.
+<i>Tersembunyi karena fitur terkait OFF: Beli SOL</i>
+---
+[💵 Beli USD · $15] [🛑 Stop Loss · −25%]
+[🎯 TP1 Profit · +30%] [✂️ TP1 Jual · 80%]
+[🚀 TP2 Profit · +50%]
+[⬅️ Menu]
+[↩️ Urungkan]
+callbacks: cfg:k:1 | cfg:k:3 | cfg:k:4 | cfg:k:5 | cfg:k:6 | cfg:m | cfg:u

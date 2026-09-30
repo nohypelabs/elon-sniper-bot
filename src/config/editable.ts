@@ -92,7 +92,7 @@ export const CONFIG_ALIASES: Record<string, EditableKey> = {
 
 export const PRESETS: Record<string, Partial<Record<EditableKey, number | boolean>>> = {
   lowrisk: {
-    BUY_AMOUNT_SOL: 0.25,
+    BUY_AMOUNT_USD: 10,
     PUMP_MAX_POSITIONS: 3,
     PUMP_MAX_HOLD_MINUTES: 5,
     PUMP_MIN_DEV_BUY_SOL: 0.5,
@@ -155,17 +155,11 @@ export function validateConfig(merged: Record<string, unknown>): string | null {
     return 'PUMP_MIN_MCAP_SOL harus <= PUMP_MAX_MCAP_SOL';
   }
 
-  // ── Stage 9b-A: TP1 + moonbag may not exceed the full position (separate
-  // block so a 3-way merge with the other agent's edits stays trivial).
-  const tp1sell = num('TP1_SELL_PERCENT');
-  const moonbagPct = num('MOONBAG_PERCENT');
-  if (
-    tp1sell !== null && moonbagPct !== null &&
-    merged['MOONBAG_ENABLED'] !== false &&
-    tp1sell + moonbagPct > 100
-  ) {
-    return 'TP1_SELL_PERCENT + MOONBAG_PERCENT harus <= 100';
-  }
+  // NOTE: there is deliberately NO "TP1_SELL_PERCENT + MOONBAG_PERCENT <= 100" rule. The moonbag percent is
+  // taken from the tokens REMAINING after TP1 (executeTp2TakeProfit sells 100 - MOONBAG_PERCENT of
+  // remainingTokens), so e.g. TP1 sells 80% and a 25% moonbag keeps 5% of the original position. An earlier
+  // version of this rule assumed the percentages were of the original position and rejected valid setups
+  // (every edit failed while TP1_SELL 80 and MOONBAG 25 were active).
 
   return null;
 }

@@ -184,9 +184,9 @@ describe('handlePresetCommand', () => {
     const config = baseConfig();
     const text = handlePresetCommand('lowrisk', successDeps(config));
     assert.ok(text.includes('✅ <b>Preset lowrisk diterapkan</b>'));
-    assert.ok(text.includes('• BUY_AMOUNT_SOL: 0.5 → 0.25'));
+    assert.ok(text.includes('• BUY_AMOUNT_USD:'));
     assert.ok(text.includes('• PUMP_MAX_POSITIONS: 3 → 3'));
-    assert.equal(config.BUY_AMOUNT_SOL, 0.25);
+    assert.equal(config.BUY_AMOUNT_USD, 10);
     assert.equal(config.PUMP_MAX_HOLD_MINUTES, 5);
   });
 

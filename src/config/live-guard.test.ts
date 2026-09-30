@@ -122,46 +122,29 @@ describe('Stage 9b-A: hardened ranges', () => {
   });
 });
 
-describe('Stage 9b-A: TP1_SELL_PERCENT + MOONBAG_PERCENT <= 100', () => {
-  it('rejects sums over 100 when moonbag is enabled', () => {
+describe('TP1_SELL_PERCENT and MOONBAG_PERCENT are independent (moonbag is taken from the remainder after TP1)', () => {
+  it('accepts TP1 selling 80% with a 25% moonbag (the setup the bot actually ran with)', () => {
     assert.equal(
-      validateConfig({ TP1_SELL_PERCENT: 90, MOONBAG_PERCENT: 15, MOONBAG_ENABLED: true }),
-      'TP1_SELL_PERCENT + MOONBAG_PERCENT harus <= 100',
+      validateConfig({ TP1_PERCENT: 30, TP2_PERCENT: 50, TP1_SELL_PERCENT: 80, MOONBAG_PERCENT: 25, MOONBAG_ENABLED: true }),
+      null,
     );
   });
 
-  it('accepts exactly 100 and non-finite/missing sides', () => {
-    assert.equal(
-      validateConfig({ TP1_SELL_PERCENT: 85, MOONBAG_PERCENT: 15, MOONBAG_ENABLED: true }),
-      null,
-    );
-    assert.equal(
-      validateConfig({ TP1_SELL_PERCENT: 100, MOONBAG_PERCENT: 50, MOONBAG_ENABLED: false }),
-      null,
-    );
-    assert.equal(validateConfig({ TP1_SELL_PERCENT: 90 }), null);
-    assert.equal(validateConfig({ MOONBAG_PERCENT: 15 }), null);
+  it('accepts sums over 100, TP1 selling everything, and moonbag disabled', () => {
+    assert.equal(validateConfig({ TP1_SELL_PERCENT: 90, MOONBAG_PERCENT: 15, MOONBAG_ENABLED: true }), null);
+    assert.equal(validateConfig({ TP1_SELL_PERCENT: 100, MOONBAG_PERCENT: 50, MOONBAG_ENABLED: true }), null);
+    assert.equal(validateConfig({ TP1_SELL_PERCENT: 100, MOONBAG_PERCENT: 50, MOONBAG_ENABLED: false }), null);
   });
 
-  it('tryApplyConfig enforces the cap on the merged config', () => {
-    const { envPath } = envFile('TP1_SELL_PERCENT=50\nMOONBAG_PERCENT=15\n');
-    const config: Record<string, any> = {
-      TP1_SELL_PERCENT: 50, MOONBAG_PERCENT: 15, MOONBAG_ENABLED: true,
-    };
-    assert.match(
-      tryApplyConfig({ TP1_SELL_PERCENT: 90 }, { config, envPath }) as string,
-      /TP1_SELL_PERCENT \+ MOONBAG_PERCENT/,
+  it('an unrelated edit is never blocked by those two values', () => {
+    const r = tryApplyConfig(
+      { BUY_AMOUNT_USD: 12 },
+      {
+        config: { TP1_PERCENT: 30, TP2_PERCENT: 50, TP1_SELL_PERCENT: 80, MOONBAG_PERCENT: 25, MOONBAG_ENABLED: true, BUY_AMOUNT_USD: 10 },
+        envPath: path.join(tmpDir(), '.env'),
+      },
     );
-    assert.equal(config.TP1_SELL_PERCENT, 50);
-  });
-
-  it('lowrisk preset still validates on typical defaults', () => {
-    // TYPICAL has no TP1_SELL/MOONBAG keys; real defaults are 50/15 (sum 65).
-    assert.equal(
-      validateConfig({ ...TYPICAL, TP1_SELL_PERCENT: 50, MOONBAG_PERCENT: 15, MOONBAG_ENABLED: true }),
-      null,
-    );
-    assert.equal(validateConfig({ ...TYPICAL, ...PRESETS.lowrisk }), null);
+    assert.equal(r, null);
   });
 });
 
