@@ -42,7 +42,9 @@ import {
   recordSellSuccess,
   shouldAlertSellFailure,
 } from './strategy/sell-guard';
-import { refreshEntry } from './strategy/entry-price';
+import { refreshEntry, shouldSkipForDrift } from './strategy/entry-price';
+import { buyReasonFor } from './strategy/buy-reason';
+import { paperEntryPrice, paperExitPrice, clampSellDelayMs } from './paper/fill-model';
 import { slippagePercent, type Trace } from './metrics/latency';
 import {
   eventLoopMonitor,
@@ -400,7 +402,22 @@ class ElonSniper {
     // replaces the entry with a real position, which is left untouched.
     // (The approval block keeps its own cleanup; this is the outer net.)
     try {
-    logger.info(`🎯 PumpFun snipe candidate: ${token.symbol} (${token.mint.slice(0, 8)}) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL`);
+    // Stage 11: record the observation drift on the BUY trace and enforce
+    // PUMP_MAX_ENTRY_DRIFT_PERCENT. The finally below deletes the placeholder
+    // on every early return, exactly like the other skip paths.
+    if (typeof token.observeDriftPct === 'number' && Number.isFinite(token.observeDriftPct)) {
+      safeNote(buyId, 'observeDriftPct', token.observeDriftPct);
+    }
+    if (shouldSkipForDrift(token.observeDriftPct, CONFIG.PUMP_MAX_ENTRY_DRIFT_PERCENT)) {
+      logger.warn(`⏭ Drift too high: ${token.symbol} moved +${(token.observeDriftPct as number).toFixed(1)}% during observation (max ${CONFIG.PUMP_MAX_ENTRY_DRIFT_PERCENT}%) — skipping buy`);
+      await logEvent('SKIP', `Buy skipped ${token.symbol}: drift_too_high (+${(token.observeDriftPct as number).toFixed(1)}% > ${CONFIG.PUMP_MAX_ENTRY_DRIFT_PERCENT}%)`, { mint: token.mint });
+      finishBuyTrace(buyId, 'drift_too_high');
+      return;
+    }
+    const driftSuffix = typeof token.observeDriftPct === 'number' && Number.isFinite(token.observeDriftPct)
+      ? ` | drift: ${token.observeDriftPct >= 0 ? '+' : ''}${token.observeDriftPct.toFixed(1)}%`
+      : '';
+    logger.info(`🎯 PumpFun snipe candidate: ${token.symbol} (${token.mint.slice(0, 8)}) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL${driftSuffix}`);
 
     await logEvent('TOKEN_FOUND', `PumpFun: ${token.symbol} | dev ${token.initialBuySol} SOL | mcap ${token.marketCapSol} SOL`, {
       mint: token.mint, creator: token.creatorWallet,
@@ -489,7 +506,7 @@ class ElonSniper {
 
     if (CONFIG.PUMP_FAST_MODE) {
       // Buy immediately, security check async after
-      const buyPromise = this.executeBuy(foundToken, `PumpFun snipe: ${token.name}`);
+      const buyPromise = this.executeBuy(foundToken, `PumpFun snipe: ${token.name}`, { observeDriftPct: token.observeDriftPct });
       this.asyncSecurityCheck(token.mint, token.symbol);
       await buyPromise;
     } else {
@@ -512,7 +529,7 @@ class ElonSniper {
           logger.warn(`⚠️ ${token.symbol} risks: ${sec.risks.join(', ')}`);
         }
       }
-      await this.executeBuy(foundToken, `PumpFun snipe: ${token.name}`);
+      await this.executeBuy(foundToken, `PumpFun snipe: ${token.name}`, { observeDriftPct: token.observeDriftPct });
     }
 
     // BUY trace fallback: finish 60s after the buy if no price was ever seen.
@@ -735,7 +752,7 @@ class ElonSniper {
     await this.executeBuy(token);
   }
 
-  private async executeBuy(token: FoundToken, tweetText?: string): Promise<void> {
+  private async executeBuy(token: FoundToken, tweetText?: string, opts?: { observeDriftPct?: number }): Promise<void> {
     if (this.paused) {
       logger.warn(`Buy skipped while paused: ${token.symbol}`);
       // Remove pending position if exists
@@ -813,10 +830,25 @@ class ElonSniper {
       return;
     }
     safeMark(token.mintAddress, 'buy_confirmed');
+
+    const source = result.txSignature?.startsWith('paper') ? 'paper' :
+                   CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
+
+    // Stage 11: paper fills land adverse to the signal (pump.fun fee + price
+    // impact + tx variance). token.priceUsd itself stays the signal price for
+    // the latency notes; entryPriceUsd is what the paper account pretends to
+    // have paid. Live mode is untouched.
+    const entryPriceUsd = source === 'paper'
+      ? paperEntryPrice(token.priceUsd, CONFIG.PAPER_FILL_SLIPPAGE_PERCENT)
+      : token.priceUsd;
+
     try {
-      safeNote(token.mintAddress, 'entryPriceUsd', token.priceUsd);
-      noteSlippage(token.mintAddress, 'entrySlipPct', traceRecorder.getNote(token.mintAddress, 'signalPriceUsd'), token.priceUsd);
+      safeNote(token.mintAddress, 'entryPriceUsd', entryPriceUsd);
+      noteSlippage(token.mintAddress, 'entrySlipPct', traceRecorder.getNote(token.mintAddress, 'signalPriceUsd'), entryPriceUsd);
       safeNote(token.mintAddress, 'paper', CONFIG.PAPER_TRADING ? 1 : 0);
+      if (typeof opts?.observeDriftPct === 'number' && Number.isFinite(opts.observeDriftPct)) {
+        safeNote(token.mintAddress, 'observeDriftPct', opts.observeDriftPct);
+      }
       const timings = (result as { timings?: { quoteMs: number; sendMs: number; confirmMs: number } }).timings;
       if (timings) {
         if (Number.isFinite(timings.quoteMs)) safeNote(token.mintAddress, 'swapQuoteMs', timings.quoteMs);
@@ -824,9 +856,6 @@ class ElonSniper {
         if (Number.isFinite(timings.confirmMs)) safeNote(token.mintAddress, 'swapConfirmMs', timings.confirmMs);
       }
     } catch { /* ignore */ }
-
-    const source = result.txSignature?.startsWith('paper') ? 'paper' :
-                   CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
 
     // Paper ledger: debit only after the paper buy succeeded.
     if (source === 'paper' && this.paperLedger) {
@@ -839,8 +868,8 @@ class ElonSniper {
       token,
       buyResult: result,
       entryTime: Date.now(),
-      entryPriceUsd: token.priceUsd,
-      currentPriceUsd: token.priceUsd,
+      entryPriceUsd,
+      currentPriceUsd: entryPriceUsd,
       solSpent: solAmount,
       remainingTokens: result.outputAmount,
       tp1Hit: false,
@@ -862,31 +891,34 @@ class ElonSniper {
       insertTrade({
         type: 'BUY', tokenMint: token.mintAddress, symbol: token.symbol,
         name: token.name, solAmount, tokenAmount: result.outputAmount,
-        priceUsd: token.priceUsd, mcapUsd: token.mcapUsd,
+        priceUsd: entryPriceUsd, mcapUsd: token.mcapUsd,
         txSignature: result.txSignature, source,
-        reason: 'tweet', tweetText: tweetText?.slice(0, 500),
+        reason: buyReasonFor(tweetText, opts?.observeDriftPct), tweetText: tweetText?.slice(0, 500),
         dex: token.dex,
       }),
       upsertPosition(
         {
           tokenMint: token.mintAddress, symbol: token.symbol, name: token.name,
-          entryPrice: token.priceUsd, solSpent: solAmount,
+          entryPrice: entryPriceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
           tweetText: tweetText?.slice(0, 500), dex: token.dex,
           mcapUsd: token.mcapUsd, tp1Hit: false, tp2Hit: false,
           moonbag: false, remainingTokens: result.outputAmount,
-          peakPnlPercent: null, currentPriceUsd: token.priceUsd,
+          peakPnlPercent: null, currentPriceUsd: entryPriceUsd,
         },
         {
-          entryPrice: token.priceUsd, solSpent: solAmount,
+          entryPrice: entryPriceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
           mcapUsd: token.mcapUsd, tp1Hit: false, tp2Hit: false,
           moonbag: false, remainingTokens: result.outputAmount,
-          currentPriceUsd: token.priceUsd,
+          currentPriceUsd: entryPriceUsd,
         },
       ),
       logEvent('BUY', `Bought ${token.symbol} with ${solAmount} SOL`, {
         mint: token.mintAddress, tx: result.txSignature, source,
+        ...(typeof opts?.observeDriftPct === 'number' && Number.isFinite(opts.observeDriftPct)
+          ? { observeDriftPct: opts.observeDriftPct }
+          : {}),
       }),
     ]);
 
@@ -910,6 +942,18 @@ class ElonSniper {
     // tp1Hit (this function never sets it). The caller routes dust to a
     // full sell so the position closes instead of retrying TP1 forever.
     if (tokensToSell <= 0) { finishSellTrace(sellId, 'skipped'); return false; }
+
+    // Stage 11: a real sell takes time to land — simulate PAPER_SELL_DELAY_MS
+    // BEFORE reading the exit price. The price feed keeps updating
+    // position.currentPriceUsd during the wait (exactly the latency risk a
+    // real sell has). The isSelling claim stays held; re-check liveness after
+    // the wait and abort cleanly when the position is gone. Predicted on
+    // CONFIG.PAPER_TRADING (paper swaps always yield a 'paper' source); the
+    // price adjustment below keys on the actual swap source.
+    if (CONFIG.PAPER_TRADING) {
+      await this.sleep(clampSellDelayMs(CONFIG.PAPER_SELL_DELAY_MS));
+      if (this.activePositions.get(mint) !== position) { finishSellTrace(sellId, 'aborted'); return false; }
+    }
 
     // Fetch current price for accurate PnL calculation (especially for timeout sells)
     if (reason.startsWith('max-hold')) {
@@ -936,14 +980,20 @@ class ElonSniper {
     safeMark(sellId, 'sell_confirmed');
 
     const partialSolSpent = position.solSpent * (sellPercent / 100);
+    const source = result.txSignature?.startsWith('paper') ? 'paper' : CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
+    // Stage 11: adverse paper exit fill (pump.fun fee + impact + variance).
+    // Live mode uses the raw feed price, byte-for-byte as before.
+    const exitPriceUsd = source === 'paper'
+      ? paperExitPrice(position.currentPriceUsd, CONFIG.PAPER_FILL_SLIPPAGE_PERCENT)
+      : position.currentPriceUsd;
     const pnlPercent = position.entryPriceUsd > 0
-      ? ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
+      ? ((exitPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
       : 0;
     const pnlSol = CONFIG.PAPER_TRADING
       ? partialSolSpent * (pnlPercent / 100)
       : result.outputAmount > 0 ? (result.outputAmount / 1e9) - partialSolSpent : 0;
     const currentMcapUsd = position.entryPriceUsd > 0
-      ? position.token.mcapUsd * (position.currentPriceUsd / position.entryPriceUsd)
+      ? position.token.mcapUsd * (exitPriceUsd / position.entryPriceUsd)
       : position.token.mcapUsd;
 
     try {
@@ -960,8 +1010,6 @@ class ElonSniper {
     this.totalPnlSol += pnlSol;
     this.registerClosedTradeRisk(pnlSol);
 
-    const source = result.txSignature?.startsWith('paper') ? 'paper' : CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
-
     // Paper ledger: credit proceeds (cost basis sold + pnl) on every paper sell.
     if (source === 'paper' && this.paperLedger) {
       this.paperLedger.credit(partialSolSpent + pnlSol);
@@ -971,7 +1019,7 @@ class ElonSniper {
       insertTrade({
         type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
         name: position.token.name, solAmount: position.solSpent * sellPercent / 100,
-        tokenAmount: tokensToSell, priceUsd: position.currentPriceUsd,
+        tokenAmount: tokensToSell, priceUsd: exitPriceUsd,
         mcapUsd: currentMcapUsd, pnlPercent, pnlSol,
         txSignature: result.txSignature, source, reason, dex: position.token.dex,
       }),
@@ -1007,6 +1055,17 @@ class ElonSniper {
   private async executeSell(mint: string, position: ActivePosition, reason: string, sellSignal?: SellSignal): Promise<boolean> {
     // Latency: exit_signal at entry (or the evaluateExit moment passed in).
     const sellId = beginSellTrace(mint, position.token.symbol, sellSignal ?? manualSellSignal(reason, pnlOf(position)));
+    // Stage 11: simulate PAPER_SELL_DELAY_MS BEFORE the exit price is read so
+    // the feed can still move position.currentPriceUsd during the wait (the
+    // unsubscribe below would freeze it). The isSelling claim stays held;
+    // abort cleanly when the position vanished meanwhile. Live mode keeps the
+    // exact old order (unsubscribe first). Delay predicted on
+    // CONFIG.PAPER_TRADING; the price adjustment below keys on the actual
+    // swap source.
+    if (CONFIG.PAPER_TRADING) {
+      await this.sleep(clampSellDelayMs(CONFIG.PAPER_SELL_DELAY_MS));
+      if (this.activePositions.get(mint) !== position) { finishSellTrace(sellId, 'aborted'); return false; }
+    }
     this.pumpListener.unsubscribeFromTrades(mint);
 
     // Fetch current price for accurate PnL calculation
@@ -1027,14 +1086,22 @@ class ElonSniper {
     if (!result.success) { finishSellTrace(sellId, 'sell_failed'); return false; }
     safeMark(sellId, 'sell_confirmed');
 
+    const source = result.txSignature?.startsWith('paper') ? 'paper' :
+                   CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
+
+    // Stage 11: adverse paper exit fill (pump.fun fee + impact + variance).
+    // Live mode uses the raw feed price, byte-for-byte as before.
+    const exitPriceUsd = source === 'paper'
+      ? paperExitPrice(position.currentPriceUsd, CONFIG.PAPER_FILL_SLIPPAGE_PERCENT)
+      : position.currentPriceUsd;
     const pnlPercent = position.entryPriceUsd > 0
-      ? ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
+      ? ((exitPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
       : 0;
     const pnlSol = CONFIG.PAPER_TRADING
       ? position.solSpent * (pnlPercent / 100)
       : result.outputAmount > 0 ? (result.outputAmount / 1e9) - position.solSpent : 0;
     const currentMcapUsd = position.entryPriceUsd > 0
-      ? position.token.mcapUsd * (position.currentPriceUsd / position.entryPriceUsd)
+      ? position.token.mcapUsd * (exitPriceUsd / position.entryPriceUsd)
       : position.token.mcapUsd;
 
     try {
@@ -1050,9 +1117,6 @@ class ElonSniper {
     this.totalPnlSol += pnlSol;
     this.registerClosedTradeRisk(pnlSol);
 
-    const source = result.txSignature?.startsWith('paper') ? 'paper' :
-                   CONFIG.GMGN_API_KEY ? 'gmgn' : 'jupiter';
-
     // Paper ledger: credit proceeds (remaining cost basis + pnl) on every paper sell.
     if (source === 'paper' && this.paperLedger) {
       this.paperLedger.credit(position.solSpent + pnlSol);
@@ -1063,7 +1127,7 @@ class ElonSniper {
         type: 'SELL', tokenMint: mint, symbol: position.token.symbol,
         name: position.token.name, solAmount: position.solSpent,
         tokenAmount: position.buyResult.outputAmount,
-        priceUsd: position.currentPriceUsd, mcapUsd: currentMcapUsd,
+        priceUsd: exitPriceUsd, mcapUsd: currentMcapUsd,
         pnlPercent, pnlSol,
         txSignature: result.txSignature, source, reason,
         dex: position.token.dex,

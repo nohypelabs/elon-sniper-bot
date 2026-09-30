@@ -117,6 +117,16 @@ export const CONFIG = {
   BUY_APPROVAL_ENABLED:    process.env.BUY_APPROVAL_ENABLED === 'true',
   BUY_APPROVAL_TIMEOUT_SEC: parseInt(process.env.BUY_APPROVAL_TIMEOUT_SEC || '20'),
 
+  // ── Stage 11: realistic paper fills + stale-entry guard (env only, NOT editable).
+  // PUMP_MAX_ENTRY_DRIFT_PERCENT: skip an observed buy when the price ran
+  // more than this % above creation during observation. 0 = disabled.
+  PUMP_MAX_ENTRY_DRIFT_PERCENT: parseFloat(process.env.PUMP_MAX_ENTRY_DRIFT_PERCENT || '0'),
+  // PAPER_FILL_SLIPPAGE_PERCENT: adverse fill vs signal, each way
+  // (pump.fun fee + price impact + tx variance). Clamped to [0, 50] at use.
+  PAPER_FILL_SLIPPAGE_PERCENT: parseFloat(process.env.PAPER_FILL_SLIPPAGE_PERCENT || '3'),
+  // PAPER_SELL_DELAY_MS: simulated time for a paper sell to land; the price
+  // feed keeps moving during the wait. Clamped to [0, 10000] at use.
+  PAPER_SELL_DELAY_MS: parseInt(process.env.PAPER_SELL_DELAY_MS || '1500'),
   // ── Stage 9b-A: LIVE-mode lock (separate block; do not merge above so a
   // 3-way merge with the MOONBAG_TRAIL_PERCENT addition stays trivial).
   // Env-only unlock: NOT in EDITABLE_CONFIG, never persisted by tryApplyConfig.

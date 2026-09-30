@@ -116,7 +116,10 @@ describe('TokenObserver curve mode', () => {
     assert.ok(r.reason!.startsWith('no_data'));
     assert.ok(r.reason!.includes('[curve]'));
     assert.ok(!r.reason!.includes('buyers (need'));
-    assert.ok(r.reason!.includes('not a market verdict'));
+    // Stage 11 wording: accountSubscribe only emits on change, so zero
+    // updates can mean no trades (not necessarily a feed gap).
+    assert.ok(r.reason!.includes('0 curve updates in'));
+    assert.ok(r.reason!.includes('(no trades, or a feed gap)'));
   });
 
   it('completed curve fails even with passing metrics', () => {
@@ -163,5 +166,89 @@ describe('TokenObserver pumpportal mode unchanged', () => {
     assert.equal(r.mode, 'pumpportal');
     assert.ok(r.reason!.includes('buyers (need'));
     assert.ok(!r.noData);
+  });
+});
+
+describe('TokenObserver last-price tracking (Stage 11)', () => {
+  function makePricedUpdate(realSol: number, slot: number, priceInSol: number, marketCapSol: number): CurveUpdate {
+    return {
+      curveKey: 'curve',
+      priceInSol,
+      marketCapSol,
+      virtualSolReserves: 30 + realSol,
+      realSolReserves: realSol,
+      complete: false,
+      slot,
+      receivedAt: Date.now(),
+    };
+  }
+
+  it('curve pass carries the latest observed price and mcap', () => {
+    const { observer, results, advance } = setup('curve');
+    observer.register(makeToken('mint-last'));
+    advance(1000);
+    observer.onCurveUpdate('mint-last', makePricedUpdate(4.0, 1, 1e-8, 33)); // baseline
+    advance(5000);
+    for (let i = 0; i < minEvents(); i++) {
+      observer.onCurveUpdate('mint-last', makePricedUpdate(4.0 + 0.5 * (i + 1), 2 + i, 2e-8, 36));
+    }
+    assert.equal(results.length, 1);
+    assert.equal(results[0].result.passed, true);
+    assert.equal(results[0].result.lastPriceInSol, 2e-8);
+    assert.equal(results[0].result.lastMarketCapSol, 36);
+  });
+
+  it('curve failure still carries the latest observed price', () => {
+    const { observer, results, advance } = setup('curve');
+    observer.register(makeToken('mint-lastfail'));
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(4.0, 1, 1e-8, 33));
+    advance(1000);
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(4.5, 2, 1.1e-8, 34));
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(5.0, 3, 1.2e-8, 35));
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(4.0, 4, 1.0e-8, 33));
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(3.0, 5, 0.9e-8, 32));
+    observer.onCurveUpdate('mint-lastfail', makePricedUpdate(2.0, 6, 0.8e-8, 31));
+    advance(CONFIG.PUMP_OBSERVE_SECONDS * 1000 + 1000);
+    observer.evaluateNow();
+    assert.equal(results.length, 1);
+    assert.equal(results[0].result.passed, false);
+    assert.equal(results[0].result.lastPriceInSol, 0.8e-8);
+    assert.equal(results[0].result.lastMarketCapSol, 31);
+  });
+
+  it('no-data result carries undefined last price', () => {
+    const { observer, results, advance } = setup('curve');
+    observer.register(makeToken('mint-nolast'));
+    advance(CONFIG.PUMP_OBSERVE_SECONDS * 1000 + 1000);
+    observer.evaluateNow();
+    assert.equal(results.length, 1);
+    assert.equal(results[0].result.lastPriceInSol, undefined);
+    assert.equal(results[0].result.lastMarketCapSol, undefined);
+  });
+
+  it('pumpportal trades carry the latest trade-implied price', () => {
+    const { observer, results, advance } = setup('pumpportal');
+    observer.register(makeToken('mint-pplast'));
+    advance(1000);
+    observer.onTrade('mint-pplast', 'buy', 'trader1', 1.0, { priceInSol: 1e-8, marketCapSol: 33 });
+    observer.onTrade('mint-pplast', 'buy', 'trader2', 2.0, { priceInSol: 1.5e-8, marketCapSol: 40 });
+    // No price on this trade — previous price must survive.
+    observer.onTrade('mint-pplast', 'sell', 'trader3', 0.5);
+    advance(CONFIG.PUMP_OBSERVE_SECONDS * 1000 + 1000);
+    observer.evaluateNow();
+    assert.equal(results.length, 1);
+    assert.equal(results[0].result.lastPriceInSol, 1.5e-8);
+    assert.equal(results[0].result.lastMarketCapSol, 40);
+  });
+
+  it('pumpportal trades without any price leave last price undefined', () => {
+    const { observer, results, advance } = setup('pumpportal');
+    observer.register(makeToken('mint-ppnoprice'));
+    advance(1000);
+    observer.onTrade('mint-ppnoprice', 'buy', 'trader1', 1.0);
+    advance(CONFIG.PUMP_OBSERVE_SECONDS * 1000 + 1000);
+    observer.evaluateNow();
+    assert.equal(results.length, 1);
+    assert.equal(results[0].result.lastPriceInSol, undefined);
   });
 });

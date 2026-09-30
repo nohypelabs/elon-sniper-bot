@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { refreshEntry } from './entry-price';
+import { refreshEntry, repriceTokenAfterObservation, shouldSkipForDrift } from './entry-price';
 
 describe('entry-price: refresh up', () => {
   it('re-prices higher and scales mcap', () => {
@@ -90,5 +90,129 @@ describe('entry-price: never NaN/Infinity/negative', () => {
     assert.ok(Number.isFinite(out.priceUsd));
     assert.ok(Number.isFinite(out.mcapUsd));
     assert.ok(out.priceUsd > 0 && out.mcapUsd >= 0);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation up 100%', () => {
+  it('adopts the live price, scales mcap, drift +100%', () => {
+    const out = repriceTokenAfterObservation(
+      { initialPriceSol: 1e-8, marketCapSol: 40 },
+      { lastPriceInSol: 2e-8 },
+    );
+    assert.equal(out.repriced, true);
+    assert.equal(out.initialPriceSol, 2e-8);
+    assert.equal(out.marketCapSol, 80);
+    assert.equal(out.driftPct, 100);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation down', () => {
+  it('adopts the lower price and reports negative drift', () => {
+    const out = repriceTokenAfterObservation(
+      { initialPriceSol: 1e-8, marketCapSol: 40 },
+      { lastPriceInSol: 0.5e-8 },
+    );
+    assert.equal(out.repriced, true);
+    assert.equal(out.initialPriceSol, 0.5e-8);
+    assert.equal(out.marketCapSol, 20);
+    assert.equal(out.driftPct, -50);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation HIKU case', () => {
+  it('drift math matches the stale-entry artefact (+85.1%)', () => {
+    const out = repriceTokenAfterObservation(
+      { initialPriceSol: 1e-8, marketCapSol: 33 },
+      { lastPriceInSol: 1.851e-8 },
+    );
+    assert.equal(out.repriced, true);
+    assert.ok(Math.abs((out.driftPct as number) - 85.1) < 1e-9);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation given mcap wins', () => {
+  it('uses lastMarketCapSol instead of scaling', () => {
+    const out = repriceTokenAfterObservation(
+      { initialPriceSol: 1e-8, marketCapSol: 40 },
+      { lastPriceInSol: 2e-8, lastMarketCapSol: 45 },
+    );
+    assert.equal(out.repriced, true);
+    assert.equal(out.initialPriceSol, 2e-8);
+    assert.equal(out.marketCapSol, 45);
+    assert.equal(out.driftPct, 100);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation missing/bad last price', () => {
+  it('returns the token unchanged with repriced=false, drift null', () => {
+    const token = { initialPriceSol: 1e-8, marketCapSol: 40 };
+    for (const last of [
+      {},
+      { lastPriceInSol: undefined },
+      { lastPriceInSol: NaN },
+      { lastPriceInSol: 0 },
+      { lastPriceInSol: -1e-8 },
+      { lastPriceInSol: Infinity },
+    ] as const) {
+      const out = repriceTokenAfterObservation(token, last);
+      assert.deepEqual(out, { initialPriceSol: 1e-8, marketCapSol: 40, repriced: false, driftPct: null });
+    }
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation zero old price', () => {
+  it('still re-prices, keeps mcap, drift null', () => {
+    const out = repriceTokenAfterObservation(
+      { initialPriceSol: 0, marketCapSol: 40 },
+      { lastPriceInSol: 2e-8 },
+    );
+    assert.equal(out.repriced, true);
+    assert.equal(out.initialPriceSol, 2e-8);
+    assert.equal(out.marketCapSol, 40);
+    assert.equal(out.driftPct, null);
+  });
+});
+
+describe('entry-price: repriceTokenAfterObservation never NaN/Infinity', () => {
+  it('repriced outputs are finite; unrepriced outputs echo the input', () => {
+    const olds = [0, -1, NaN, Infinity];
+    const lasts: Array<number | undefined> = [undefined, NaN, 0, -1, Infinity, 2e-8];
+    for (const old of olds) {
+      for (const last of lasts) {
+        const out = repriceTokenAfterObservation(
+          { initialPriceSol: old, marketCapSol: 40 },
+          { lastPriceInSol: last },
+        );
+        if (out.repriced) {
+          assert.ok(Number.isFinite(out.initialPriceSol), `price not finite for old=${old} last=${last}`);
+          assert.ok(Number.isFinite(out.marketCapSol), `mcap not finite for old=${old} last=${last}`);
+        } else {
+          // Unchanged path echoes the caller's snapshot (never computes).
+          assert.ok(out.initialPriceSol === old || (Number.isNaN(out.initialPriceSol) && Number.isNaN(old)));
+          assert.equal(out.marketCapSol, 40);
+          assert.equal(out.driftPct, null);
+        }
+        assert.ok(out.driftPct === null || Number.isFinite(out.driftPct as number));
+      }
+    }
+  });
+});
+
+describe('entry-price: shouldSkipForDrift predicate', () => {
+  it('disabled guard (0/negative/NaN max) never skips', () => {
+    assert.equal(shouldSkipForDrift(85, 0), false);
+    assert.equal(shouldSkipForDrift(85, -10), false);
+    assert.equal(shouldSkipForDrift(85, NaN), false);
+  });
+
+  it('skips only when finite drift exceeds a positive max', () => {
+    assert.equal(shouldSkipForDrift(85.1, 50), true);
+    assert.equal(shouldSkipForDrift(50.01, 50), true);
+    assert.equal(shouldSkipForDrift(50, 50), false);
+    assert.equal(shouldSkipForDrift(30, 50), false);
+    assert.equal(shouldSkipForDrift(-10, 50), false);
+    assert.equal(shouldSkipForDrift(null, 50), false);
+    assert.equal(shouldSkipForDrift(undefined, 50), false);
+    assert.equal(shouldSkipForDrift(NaN, 50), false);
   });
 });

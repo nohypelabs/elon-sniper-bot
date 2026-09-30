@@ -68,3 +68,91 @@ export function refreshEntry(
 
   return { priceUsd: newPrice, mcapUsd: newMcap, refreshed: true };
 }
+
+// ─── Stage 11: observation re-price ─────────────────────────────
+// Tokens that pass the pre-buy observation window pumped (or dumped)
+// during it, so the creation-event price is stale by buy time. The
+// observer attaches the latest seen price to its result; this pure helper
+// folds it back into the token snapshot before the buy.
+
+export interface ObservationPrice {
+  lastPriceInSol?: number;
+  lastMarketCapSol?: number;
+}
+
+export interface RepricedToken {
+  initialPriceSol: number;
+  marketCapSol: number;
+  repriced: boolean;
+  /** Slippage of the new price vs the creation price, in percent. Null when unmeasurable. */
+  driftPct: number | null;
+}
+
+/**
+ * Re-price a creation-event token snapshot from the latest observed price.
+ *
+ * Returns the token's values unchanged with repriced=false and driftPct=null
+ * when the last price is missing/non-finite/<=0. Otherwise returns the new
+ * price, the new mcap (lastMarketCapSol when finite > 0, else the old mcap
+ * scaled by newPrice/oldPrice), repriced=true and driftPct = (new-old)/old
+ * in percent (null when the old price is not usable). Never NaN/Infinity.
+ */
+export function repriceTokenAfterObservation(
+  token: { initialPriceSol: number; marketCapSol: number },
+  last: ObservationPrice,
+): RepricedToken {
+  const unchanged: RepricedToken = {
+    initialPriceSol: token.initialPriceSol,
+    marketCapSol: token.marketCapSol,
+    repriced: false,
+    driftPct: null,
+  };
+
+  const newPrice = last?.lastPriceInSol;
+  if (typeof newPrice !== 'number' || !Number.isFinite(newPrice) || newPrice <= 0) {
+    return unchanged;
+  }
+
+  const oldPrice = token.initialPriceSol;
+  const oldUsable = typeof oldPrice === 'number' && Number.isFinite(oldPrice) && oldPrice > 0;
+
+  let newMcap: number;
+  const lastMcap = last?.lastMarketCapSol;
+  if (typeof lastMcap === 'number' && Number.isFinite(lastMcap) && lastMcap > 0) {
+    newMcap = lastMcap;
+  } else if (oldUsable) {
+    const ratio = newPrice / (oldPrice as number);
+    if (!Number.isFinite(ratio) || ratio <= 0) return unchanged;
+    const oldMcap = token.marketCapSol;
+    newMcap = typeof oldMcap === 'number' && Number.isFinite(oldMcap) && oldMcap >= 0
+      ? oldMcap * ratio
+      : 0;
+    if (!Number.isFinite(newMcap) || newMcap < 0) newMcap = 0;
+  } else {
+    // Old price unusable and no live mcap — keep a sane mcap, still re-price.
+    const oldMcap = token.marketCapSol;
+    newMcap = typeof oldMcap === 'number' && Number.isFinite(oldMcap) && oldMcap >= 0 ? oldMcap : 0;
+  }
+
+  let drift: number | null = null;
+  if (oldUsable) {
+    const d = ((newPrice - (oldPrice as number)) / (oldPrice as number)) * 100;
+    drift = Number.isFinite(d) ? d : null;
+  }
+
+  return { initialPriceSol: newPrice, marketCapSol: newMcap, repriced: true, driftPct: drift };
+}
+
+/**
+ * Pure drift-guard predicate for PUMP_MAX_ENTRY_DRIFT_PERCENT.
+ * Returns true only when the guard is enabled (maxPct > 0) and a finite
+ * measured drift exceeds it. Unknown drift (null/undefined/NaN) never skips.
+ */
+export function shouldSkipForDrift(
+  driftPct: number | null | undefined,
+  maxPct: number,
+): boolean {
+  if (typeof maxPct !== 'number' || !Number.isFinite(maxPct) || maxPct <= 0) return false;
+  if (typeof driftPct !== 'number' || !Number.isFinite(driftPct)) return false;
+  return driftPct > maxPct;
+}

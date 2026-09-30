@@ -25,7 +25,7 @@ Built with several coding agents in parallel (opencode, Cline, one aborted freeb
 | 9 | From an adversarial review: failed sells retry with backoff instead of bricking the position; moonbag remainder is trailed (`MOONBAG_TRAIL_PERCENT`); NaN safe; ghost placeholders fixed; restart recovery of open positions; LIVE lock; safe alert HTML; DB lock file |
 | e2e | `src/dashboard/server.e2e.test.ts` runs the real server against a temp DB (29 tests) |
 
-Known limits: paper fills use a fake constant price, so paper PnL ignores latency and slippage (use `/latency` before going live); a concurrent buy can pass `canAfford` twice before the debit; partial fills on live sells are not detected (remaining tokens assume a full fill); the wallet private key is still handled via the dashboard/`.env` (no HSM/keystore).
+Known limits: paper fills now include 3% adverse slippage each way (`PAPER_FILL_SLIPPAGE_PERCENT`) and a 1.5 s simulated sell-landing delay (`PAPER_SELL_DELAY_MS`, the feed keeps moving during the wait), but still no competition/MEV/landing failures; observed buys are re-priced to the end-of-window price with `PUMP_MAX_ENTRY_DRIFT_PERCENT` (0 = off) skipping runaway entries, and BUY reasons distinguish `pump-observed` / `pump-snipe` / `tweet`; pre-2026-09-30 paper results were inflated by the stale creation-price entry (passed observation = pumped 60 s, e.g. HIKU booked +85% one second after the buy); a concurrent buy can pass `canAfford` twice before the debit; partial fills on live sells are not detected (remaining tokens assume a full fill); the wallet private key is still handled via the dashboard/`.env` (no HSM/keystore).
 
 ## Price feed (Stage 10, 2026-09-30)
 

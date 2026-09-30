@@ -15,6 +15,7 @@ import { DevWalletChecker } from './dev-wallet.checker';
 import { TokenObserver, ObservationResult } from './token-observer';
 import { CurveFeed, CurveUpdate } from './curve-feed';
 import { deriveBondingCurve } from './bonding-curve';
+import { repriceTokenAfterObservation } from '../strategy/entry-price';
 
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
 
@@ -68,9 +69,42 @@ export interface NewPumpToken {
    * traces. Optional so older producers/tests keep compiling.
    */
   receivedAtMono?: number;
+  /**
+   * Stage 11: set ONLY on the observer handoff path (handleObservationResult
+   * via applyObservationReprice). observeDriftPct is the % the price moved
+   * between creation and the end of observation (0 when unmeasured);
+   * creationPriceSol is the creation-event price for reference. Undefined on
+   * immediate (non-observed) snipes — index.ts uses this to tell
+   * 'pump-observed' buys apart from 'pump-snipe' buys and to enforce
+   * PUMP_MAX_ENTRY_DRIFT_PERCENT.
+   */
+  observeDriftPct?: number;
+  creationPriceSol?: number;
 }
 
 type TokenCallback = (token: NewPumpToken) => Promise<void>;
+
+/**
+ * Stage 11: pure observer-handoff helper. Folds the observer's latest price
+ * into a COPY of the creation-event token (the observer's object is never
+ * mutated) and stamps creationPriceSol + observeDriftPct so index.ts can
+ * enforce the drift guard and record a truthful BUY reason. observeDriftPct
+ * is 0 when no live price was ever seen (guard treats unknown as no drift;
+ * the reason still reads 'pump-observed' since the token passed observation).
+ */
+export function applyObservationReprice(token: NewPumpToken, result: ObservationResult): NewPumpToken {
+  const r = repriceTokenAfterObservation(
+    { initialPriceSol: token.initialPriceSol, marketCapSol: token.marketCapSol },
+    { lastPriceInSol: result.lastPriceInSol, lastMarketCapSol: result.lastMarketCapSol },
+  );
+  return {
+    ...token,
+    initialPriceSol: r.initialPriceSol,
+    marketCapSol: r.marketCapSol,
+    creationPriceSol: token.initialPriceSol,
+    observeDriftPct: r.driftPct ?? 0,
+  };
+}
 
 export class PumpFunListener {
   private ws: WebSocket | null = null;
@@ -432,7 +466,16 @@ export class PumpFunListener {
       // Route to observer for tokens under observation
       if (this.observer && this.observer.has(msg.mint)) {
         const solAmount = parseFloat(msg.solAmount) || 0;
-        this.observer.onTrade(msg.mint, msg.txType, msg.traderPublicKey || '', solAmount);
+        // Stage 11: latest trade-implied price for entry re-pricing
+        // (price = vSol/vTokens, mcap = marketCapSol when present).
+        const obVSol = parseFloat(msg.vSolInBondingCurve);
+        const obVTokens = parseFloat(msg.vTokensInBondingCurve);
+        const obPrice = Number.isFinite(obVSol) && Number.isFinite(obVTokens) && obVTokens > 0
+          ? obVSol / obVTokens : undefined;
+        const obMcapRaw = parseFloat(msg.marketCapSol);
+        const obMcap = Number.isFinite(obMcapRaw) && obMcapRaw > 0 ? obMcapRaw : undefined;
+        this.observer.onTrade(msg.mint, msg.txType, msg.traderPublicKey || '', solAmount,
+          { priceInSol: obPrice, marketCapSol: obMcap });
       }
 
       return;
@@ -567,8 +610,19 @@ export class PumpFunListener {
 
     if (result.passed) {
       logger.info(`✅ Observation passed: ${token.symbol} — ${result.uniqueBuyers} buyers, ${(result.buyRatio * 100).toFixed(0)}% ratio, ${result.solVelocity.toFixed(3)} SOL/s`);
+      // Stage 11: the creation-event price is stale by now (passed tokens are
+      // exactly those that moved during the window) — hand the callback a
+      // re-priced COPY, never the observer's object.
+      const repriced = applyObservationReprice(token, result);
+      if (repriced.initialPriceSol !== token.initialPriceSol) {
+        const drift = typeof repriced.observeDriftPct === 'number' ? repriced.observeDriftPct : 0;
+        const sign = drift >= 0 ? '+' : '';
+        logger.info(`🔄 observation re-price ${repriced.symbol}: creation ${token.initialPriceSol.toExponential(3)} -> now ${repriced.initialPriceSol.toExponential(3)} SOL (${sign}${drift.toFixed(1)}%)`);
+      } else {
+        logger.info(`📎 observation ${token.symbol}: no live price seen — keeping creation price ${token.initialPriceSol.toExponential(3)} SOL`);
+      }
       if (this.callback) {
-        await this.callback(token).catch(err =>
+        await this.callback(repriced).catch(err =>
           logger.error(`PumpFun callback error (observer): ${err.message}`),
         );
       }

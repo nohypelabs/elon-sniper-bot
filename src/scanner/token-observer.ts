@@ -25,6 +25,11 @@ export interface ObservedToken {
   lastRealSol: number | null;
   lastSlot: number;
   completed: boolean;
+  // Stage 11: latest observed price for entry re-pricing. Curve mode: from
+  // the most recent CurveUpdate. PumpPortal mode: from the latest trade
+  // message (vSol/vTokens). Undefined when nothing was ever seen.
+  lastPriceInSol?: number;
+  lastMarketCapSol?: number;
 }
 
 export interface ObservationResult {
@@ -38,6 +43,14 @@ export interface ObservationResult {
   mode: 'pumpportal' | 'curve';
   /** True when the feed delivered nothing at all (distinct from a 0-buyer market verdict). */
   noData?: boolean;
+  /**
+   * Stage 11: latest observed price at result time (for entry re-pricing).
+   * Curve mode: most recent CurveUpdate (priceInSol/marketCapSol).
+   * PumpPortal mode: latest trade message carrying vSol/vTokens reserves.
+   * Undefined when nothing was ever seen. Present on passed AND failed results.
+   */
+  lastPriceInSol?: number;
+  lastMarketCapSol?: number;
 }
 
 type ResultCallback = (token: NewPumpToken, result: ObservationResult) => void;
@@ -108,9 +121,19 @@ export class TokenObserver {
     return this.observed.has(mint);
   }
 
-  onTrade(mint: string, txType: 'buy' | 'sell', traderPublicKey: string, solAmount: number): void {
+  onTrade(mint: string, txType: 'buy' | 'sell', traderPublicKey: string, solAmount: number, price?: { priceInSol?: number; marketCapSol?: number }): void {
     const entry = this.observed.get(mint);
     if (!entry) return;
+
+    // Stage 11: remember the latest trade-implied price for entry re-pricing.
+    if (price) {
+      if (typeof price.priceInSol === 'number' && Number.isFinite(price.priceInSol) && price.priceInSol > 0) {
+        entry.lastPriceInSol = price.priceInSol;
+      }
+      if (typeof price.marketCapSol === 'number' && Number.isFinite(price.marketCapSol) && price.marketCapSol > 0) {
+        entry.lastMarketCapSol = price.marketCapSol;
+      }
+    }
 
     if (txType === 'buy') {
       if (traderPublicKey) entry.buyers.add(traderPublicKey);
@@ -147,6 +170,15 @@ export class TokenObserver {
     if (update.complete) entry.completed = true;
     if (typeof update.slot === 'number' && update.slot > entry.lastSlot) {
       entry.lastSlot = update.slot;
+    }
+
+    // Stage 11: most recent curve price wins (baseline included — the price
+    // is valid even before a delta-derived event exists).
+    if (typeof update.priceInSol === 'number' && Number.isFinite(update.priceInSol) && update.priceInSol > 0) {
+      entry.lastPriceInSol = update.priceInSol;
+    }
+    if (typeof update.marketCapSol === 'number' && Number.isFinite(update.marketCapSol) && update.marketCapSol > 0) {
+      entry.lastMarketCapSol = update.marketCapSol;
     }
 
     if (entry.lastRealSol === null) {
@@ -200,7 +232,7 @@ export class TokenObserver {
       solVelocity >= CONFIG.PUMP_MIN_SOL_VELOCITY
     ) {
       // All thresholds met — emit immediately
-      const result: ObservationResult = { passed: true, reason: null, uniqueBuyers, buyRatio, solVelocity, mode: 'pumpportal' };
+      const result: ObservationResult = { passed: true, reason: null, uniqueBuyers, buyRatio, solVelocity, mode: 'pumpportal', lastPriceInSol: entry.lastPriceInSol, lastMarketCapSol: entry.lastMarketCapSol };
       this.observed.delete(mint);
       if (this.resultCallback) {
         this.resultCallback(entry.token, result);
@@ -231,6 +263,8 @@ export class TokenObserver {
         buyRatio,
         solVelocity,
         mode: 'curve',
+        lastPriceInSol: entry.lastPriceInSol,
+        lastMarketCapSol: entry.lastMarketCapSol,
       };
       this.observed.delete(mint);
       if (this.resultCallback) {
@@ -273,18 +307,21 @@ export class TokenObserver {
     }
 
     // No curve data and no trades at all → the feed delivered nothing.
-    // This is a feed gap, NOT a market verdict (distinct from '0 buyers').
+    // accountSubscribe only emits on change, so zero updates can also mean
+    // the token simply had no trades (distinct from a 0-buyer market verdict).
     const totalTrades = entry.buyCount + entry.sellCount;
     if (totalTrades === 0) {
       const secs = Math.round(elapsedSec);
       return {
         passed: false,
-        reason: `no_data [${entry.feedMode}]: 0 updates in ${secs}s — feed gap, not a market verdict`,
+        reason: `no_data [${entry.feedMode}]: 0 curve updates in ${secs}s (no trades, or a feed gap)`,
         uniqueBuyers: 0,
         buyRatio: 0,
         solVelocity: 0,
         mode: entry.feedMode,
         noData: true,
+        lastPriceInSol: entry.lastPriceInSol,
+        lastMarketCapSol: entry.lastMarketCapSol,
       };
     }
 
@@ -311,6 +348,8 @@ export class TokenObserver {
       buyRatio,
       solVelocity,
       mode: 'pumpportal',
+      lastPriceInSol: entry.lastPriceInSol,
+      lastMarketCapSol: entry.lastMarketCapSol,
     };
   }
 
@@ -340,6 +379,8 @@ export class TokenObserver {
       buyRatio,
       solVelocity,
       mode: 'curve',
+      lastPriceInSol: entry.lastPriceInSol,
+      lastMarketCapSol: entry.lastMarketCapSol,
     };
   }
 }
