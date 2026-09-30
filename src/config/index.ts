@@ -101,6 +101,11 @@ export const CONFIG = {
   // Ask on Telegram (Buy/Reject buttons) before each auto-snipe buy.
   BUY_APPROVAL_ENABLED:    process.env.BUY_APPROVAL_ENABLED === 'true',
   BUY_APPROVAL_TIMEOUT_SEC: parseInt(process.env.BUY_APPROVAL_TIMEOUT_SEC || '20'),
+
+  // ── Stage 9b-A: LIVE-mode lock (separate block; do not merge above so a
+  // 3-way merge with the MOONBAG_TRAIL_PERCENT addition stays trivial).
+  // Env-only unlock: NOT in EDITABLE_CONFIG, never persisted by tryApplyConfig.
+  LIVE_TRADING_ALLOWED: process.env.LIVE_TRADING_ALLOWED === 'true',
 };
 
 export const SOL_MINT = 'So11111111111111111111111111111111111111112';

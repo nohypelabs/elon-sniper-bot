@@ -61,6 +61,9 @@ describe('escapeHtml', () => {
   it('escapes & < >', () => {
     assert.equal(escapeHtml('<b>&</b>'), '&lt;b&gt;&amp;&lt;/b&gt;');
   });
+  it('escapes double and single quotes', () => {
+    assert.equal(escapeHtml('"\'<>&'), '&quot;&#39;&lt;&gt;&amp;');
+  });
   it('leaves plain text alone', () => {
     assert.equal(escapeHtml('hello 123'), 'hello 123');
   });

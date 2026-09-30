@@ -27,7 +27,11 @@ export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    // ── Stage 9b-A: also escape quotes so values stay inert inside
+    // attributes (e.g. href="...") and quoted contexts.
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function fmtVal(v: unknown): string {

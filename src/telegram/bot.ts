@@ -22,6 +22,8 @@ import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { tryApplyConfig } from '../config/editable';
+import { liveModeBlocked } from '../config/live-guard';
+import { safeLink, safeText } from './safe-html';
 import {
   escapeHtml,
   handlePresetCommand,
@@ -171,14 +173,15 @@ async function answerCallback(callbackQueryId: string, text?: string): Promise<v
 // ─── Alert functions ──────────────────────────────────────────────
 
 export async function alertTweetDetected(text: string, keywords: string[], author?: string, authorLabel?: string): Promise<void> {
-  const who = authorLabel ? `${authorLabel} (@${author})` : 'Elon Musk (@elonmusk)';
+  // ── Stage 9b-A: author/label/text/keywords are tweet-controlled -> escape.
+  const who = authorLabel ? `${safeText(authorLabel)} (@${safeText(author ?? '')})` : 'Elon Musk (@elonmusk)';
   const msg = [
     `🐦 <b>TWEET DETECTED!</b>`,
-    `👤 <b>${escapeHtml(who)}</b>`,
+    `👤 <b>${who}</b>`,
     '',
-    `📝 ${escapeHtml(text.slice(0, 500))}`,
+    `📝 ${safeText(text.slice(0, 500))}`,
     '',
-    `🔑 <b>Keywords:</b> ${keywords.map(k => `<code>${k}</code>`).join(', ')}`,
+    `🔑 <b>Keywords:</b> ${keywords.map(k => `<code>${safeText(k)}</code>`).join(', ')}`,
     '',
     `🔍 Searching for matching tokens...`,
   ].join('\n');
@@ -204,14 +207,15 @@ export async function alertTokensFound(tokens: FoundToken[], tweetText: string):
       ? `${t.ageMinutes.toFixed(0)}m`
       : `${(t.ageMinutes / 60).toFixed(1)}h`;
 
+    // ── Stage 9b-A: symbol/name/dex/keyword/url are token-controlled.
     lines.push(
-      `${i === 0 ? '⭐' : `${i + 1}.`} <b>${t.symbol}</b> — ${t.name}`,
+      `${i === 0 ? '⭐' : `${i + 1}.`} <b>${safeText(t.symbol)}</b> — ${safeText(t.name)}`,
       `   💰 MCap: $${formatNum(t.mcapUsd)}`,
       `   💧 Liq: $${formatNum(t.liquidity)}`,
       `   📊 Vol: $${formatNum(t.volume24h)}`,
       `   📅 Age: ${ageStr}`,
-      `   🔗 ${t.dex} | Keyword: <code>${t.matchedKeyword}</code>`,
-      `   <a href="${t.url}">View Chart</a>`,
+      `   🔗 ${safeText(t.dex)} | Keyword: <code>${safeText(t.matchedKeyword)}</code>`,
+      `   ${safeLink(t.url, 'View Chart')}`,
       '',
     );
 
@@ -223,7 +227,8 @@ export async function alertTokensFound(tokens: FoundToken[], tweetText: string):
 
   if (tokens.length > 0) {
     lines.push(
-      `💡 <b>Lowest mcap: ${tokens[0].symbol} ($${formatNum(tokens[0].mcapUsd)})</b>`,
+      // ── Stage 9b-A: token symbol is token-controlled.
+      `💡 <b>Lowest mcap: ${safeText(tokens[0].symbol)} ($${formatNum(tokens[0].mcapUsd)})</b>`,
       `⚠️ Buy amount: ${CONFIG.BUY_AMOUNT_SOL} SOL | Mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`,
     );
   }
@@ -242,14 +247,16 @@ export async function alertBuyExecuted(
   const msg = [
     `${mode} <b>BUY EXECUTED!</b>`,
     '',
-    `🪙 <b>${token.symbol}</b> (${token.name})`,
+    // ── Stage 9b-A: symbol/name/url are token-controlled; txSig is hex-ish
+    // but escaped anyway so a malformed RPC value cannot break HTML.
+    `🪙 <b>${safeText(token.symbol)}</b> (${safeText(token.name)})`,
     `💰 Spent: ${solSpent} SOL`,
     `📊 MCap at entry: $${formatNum(token.mcapUsd)}`,
     `🎯 Take Profit: +${CONFIG.TAKE_PROFIT_PERCENT}%`,
     `🛑 Stop Loss: -${CONFIG.STOP_LOSS_PERCENT}%`,
     '',
-    `🔗 TX: <code>${txSig.slice(0, 20)}...</code>`,
-    `📈 <a href="${token.url}">View Chart</a>`,
+    `🔗 TX: <code>${escapeHtml(txSig.slice(0, 20))}...</code>`,
+    `📈 ${safeLink(token.url, 'View Chart')}`,
   ].join('\n');
 
   await sendWithButtons(msg, [
@@ -268,7 +275,8 @@ export async function alertSellExecuted(
   const sign  = pnlPercent >= 0 ? '+' : '';
 
   const lines = [
-    `${emoji} <b>SOLD ${symbol}</b>`,
+    // ── Stage 9b-A: symbol/reason are token-controlled -> escape.
+    `${emoji} <b>SOLD ${safeText(symbol)}</b>`,
     '',
     `📈 PnL: ${sign}${pnlPercent.toFixed(1)}%`,
   ];
@@ -283,7 +291,7 @@ export async function alertSellExecuted(
     }
   }
 
-  lines.push(`📋 Reason: ${reason}`);
+  lines.push(`📋 Reason: ${safeText(reason)}`);
   await send(lines.join('\n'));
 }
 
@@ -440,7 +448,12 @@ async function pollLoop(): Promise<void> {
         } else if (text === '/latency') {
           if (onLatencyCommand) await send(await onLatencyCommand());
         } else if (text === '/live') {
-          if (onSetModeCommand) {
+          // ── Stage 9b-A: LIVE-mode guard (separate branch; do not switch
+          // without the env unlock).
+          const blocked = liveModeBlocked(false, (CONFIG as any).LIVE_TRADING_ALLOWED === true);
+          if (blocked) {
+            await send(`🔒 ${blocked}`);
+          } else if (onSetModeCommand) {
             await onSetModeCommand(false);
             await send('✅ Mode diubah ke LIVE. Bot akan gunakan saldo nyata saat buka posisi.');
           }

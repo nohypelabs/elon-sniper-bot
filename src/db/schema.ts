@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  boolean,
   doublePrecision,
   index,
   jsonb,
@@ -52,6 +53,16 @@ export const positions = pgTable('Position', {
   openedAt: timestamp('openedAt', { withTimezone: true, mode: 'date' })
     .notNull()
     .defaultNow(),
+  // ── Stage 9c: restart recovery — persist live position state so a
+  // restart can rebuild ActivePosition rows with SL/TP/max-hold intact.
+  // entryPrice keeps its meaning: priceUsd at buy time (entryPriceUsd).
+  mcapUsd: doublePrecision('mcapUsd').notNull().default(0),
+  tp1Hit: boolean('tp1Hit').notNull().default(false),
+  tp2Hit: boolean('tp2Hit').notNull().default(false),
+  moonbag: boolean('moonbag').notNull().default(false),
+  remainingTokens: doublePrecision('remainingTokens').notNull().default(0),
+  peakPnlPercent: doublePrecision('peakPnlPercent'),
+  currentPriceUsd: doublePrecision('currentPriceUsd').notNull().default(0),
 });
 
 export const botEvents = pgTable(

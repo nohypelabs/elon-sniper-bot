@@ -84,7 +84,7 @@ describe('parseValue: malformed numbers', () => {
   }
 
   it('rejects negative values with the range message', () => {
-    assert.equal(parseValue('BUY_AMOUNT_SOL', '-1'), 'BUY_AMOUNT_SOL harus antara 0.001 dan 10');
+    assert.equal(parseValue('BUY_AMOUNT_SOL', '-1'), 'BUY_AMOUNT_SOL harus antara 0.001 dan 2');
   });
 
   it('rejects garbage booleans', () => {
@@ -95,7 +95,11 @@ describe('parseValue: malformed numbers', () => {
 });
 
 describe('parseValue: range boundaries', () => {
+  // ── Stage 9b-A: PUMP_MAX_HOLD_MINUTES has a split rule — RANGES still
+  // carries the env-boot min 0, but runtime edits (parseValue/tryApplyConfig)
+  // reject 0. Skip the generic min check for it; covered below.
   for (const [key, range] of Object.entries(RANGES)) {
+    if (key === 'PUMP_MAX_HOLD_MINUTES') continue;
     it(`${key} accepts min/max and rejects just outside`, () => {
       assert.equal(parseValue(key, String(range.min)), range.min);
       assert.equal(parseValue(key, String(range.max)), range.max);
@@ -107,8 +111,8 @@ describe('parseValue: range boundaries', () => {
   }
 
   it('uses the "antara" message with the table bounds', () => {
-    assert.equal(parseValue('BUY_AMOUNT_SOL', '11'), 'BUY_AMOUNT_SOL harus antara 0.001 dan 10');
-    assert.equal(parseValue('PUMP_MAX_POSITIONS', '21'), 'PUMP_MAX_POSITIONS harus antara 1 dan 20');
+    assert.equal(parseValue('BUY_AMOUNT_SOL', '11'), 'BUY_AMOUNT_SOL harus antara 0.001 dan 2');
+    assert.equal(parseValue('PUMP_MAX_POSITIONS', '21'), 'PUMP_MAX_POSITIONS harus antara 1 dan 10');
   });
 
   it('integer keys reject fractions within range', () => {
@@ -116,6 +120,15 @@ describe('parseValue: range boundaries', () => {
     assert.equal(parseValue('PUMP_MAX_POSITIONS', '3.5'), 'PUMP_MAX_POSITIONS harus bilangan bulat');
     assert.equal(parseValue('PUMP_MAX_HOLD_MINUTES', '1.5'), 'PUMP_MAX_HOLD_MINUTES harus bilangan bulat');
     assert.equal(parseValue('BUY_APPROVAL_TIMEOUT_SEC', '5.5'), 'BUY_APPROVAL_TIMEOUT_SEC harus bilangan bulat');
+  });
+
+  // ── Stage 9b-A: runtime edits may not disable max-hold (min 1) even
+  // though the env boot value 0 stays valid in validateConfig().
+  it('PUMP_MAX_HOLD_MINUTES rejects 0 via parseValue but validates 0 from env', () => {
+    assert.equal(parseValue('PUMP_MAX_HOLD_MINUTES', '0'), 'PUMP_MAX_HOLD_MINUTES harus antara 1 dan 1440');
+    assert.equal(parseValue('PUMP_MAX_HOLD_MINUTES', '1'), 1);
+    assert.equal(parseValue('PUMP_MAX_HOLD_MINUTES', '1440'), 1440);
+    assert.equal(validateConfig({ PUMP_MAX_HOLD_MINUTES: 0 }), null);
   });
 });
 
@@ -200,13 +213,32 @@ describe('tryApplyConfig', () => {
     assert.equal(fs.readFileSync(envPath, 'utf8'), 'BUY_AMOUNT_SOL=0.25\nKEEP=me\n');
   });
 
-  it('allows PAPER_TRADING even though it is not in EDITABLE_CONFIG', () => {
+  it('allows PAPER_TRADING=true even though it is not in EDITABLE_CONFIG', () => {
     const dir = tmpDir();
     const envPath = path.join(dir, '.env');
-    const config: Record<string, any> = { PAPER_TRADING: true };
-    assert.equal(tryApplyConfig({ PAPER_TRADING: false }, { config, envPath }), null);
-    assert.equal(config.PAPER_TRADING, false);
-    assert.equal(fs.readFileSync(envPath, 'utf8'), 'PAPER_TRADING=false\n');
+    const config: Record<string, any> = { PAPER_TRADING: false };
+    assert.equal(tryApplyConfig({ PAPER_TRADING: true }, { config, envPath }), null);
+    assert.equal(config.PAPER_TRADING, true);
+    assert.equal(fs.readFileSync(envPath, 'utf8'), 'PAPER_TRADING=true\n');
+  });
+
+  it('allows PAPER_TRADING=false only with liveAllowed:true', () => {
+    const locked = envFile('PAPER_TRADING=true\n');
+    const lockedConfig: Record<string, any> = { PAPER_TRADING: true };
+    assert.equal(
+      tryApplyConfig({ PAPER_TRADING: false }, { config: lockedConfig, envPath: locked.envPath, liveAllowed: false }),
+      'Mode LIVE dikunci: set LIVE_TRADING_ALLOWED=true di .env lalu restart',
+    );
+    assert.equal(lockedConfig.PAPER_TRADING, true);
+
+    const unlocked = envFile('PAPER_TRADING=true\n');
+    const unlockedConfig: Record<string, any> = { PAPER_TRADING: true };
+    assert.equal(
+      tryApplyConfig({ PAPER_TRADING: false }, { config: unlockedConfig, envPath: unlocked.envPath, liveAllowed: true }),
+      null,
+    );
+    assert.equal(unlockedConfig.PAPER_TRADING, false);
+    assert.equal(fs.readFileSync(unlocked.envPath, 'utf8'), 'PAPER_TRADING=false\n');
   });
 
   it('rejects unknown keys and changes nothing', () => {
@@ -228,9 +260,13 @@ describe('tryApplyConfig', () => {
     const config: Record<string, any> = { BUY_AMOUNT_SOL: 0.5 };
     assert.match(tryApplyConfig({ BUY_AMOUNT_SOL: true }, { config, envPath }) as string, /angka/);
     assert.match(tryApplyConfig({ AUTO_SELL: 1 }, { config, envPath }) as string, /on\/off/);
-    assert.match(tryApplyConfig({ BUY_AMOUNT_SOL: 50 }, { config, envPath }) as string, /antara 0.001 dan 10/);
+    assert.match(tryApplyConfig({ BUY_AMOUNT_SOL: 50 }, { config, envPath }) as string, /antara 0.001 dan 2/);
     assert.match(tryApplyConfig({ BUY_AMOUNT_SOL: Number.NaN }, { config, envPath }) as string, /angka/);
     assert.match(tryApplyConfig({ PUMP_MAX_POSITIONS: 3.5 }, { config, envPath }) as string, /bilangan bulat/);
+    assert.match(tryApplyConfig({ STOP_LOSS_PERCENT: 26 }, { config, envPath }) as string, /antara 1 dan 25/);
+    assert.match(tryApplyConfig({ MAX_SLIPPAGE_BPS: 2501 }, { config, envPath }) as string, /antara 1 dan 2500/);
+    assert.match(tryApplyConfig({ PUMP_MAX_POSITIONS: 11 }, { config, envPath }) as string, /antara 1 dan 10/);
+    assert.match(tryApplyConfig({ PUMP_MAX_HOLD_MINUTES: 0 }, { config, envPath }) as string, /antara 1 dan 1440/);
     assert.equal(config.BUY_AMOUNT_SOL, 0.5);
     assert.equal(fs.readFileSync(envPath, 'utf8'), original);
   });
@@ -419,7 +455,7 @@ describe('MOONBAG_TRAIL_PERCENT', () => {
 
 describe('applyConfig', () => {
   it('throws on out-of-range numbers', () => {
-    assert.throws(() => applyConfig({ BUY_AMOUNT_SOL: 999 }), /BUY_AMOUNT_SOL harus antara 0.001 dan 10/);
+    assert.throws(() => applyConfig({ BUY_AMOUNT_SOL: 999 }), /BUY_AMOUNT_SOL harus antara 0.001 dan 2/);
   });
 
   it('throws on unknown keys', () => {

@@ -1,5 +1,6 @@
 import { Connection } from '@solana/web3.js';
 import { CONFIG } from './config';
+import { enforceStartupMode } from './config/live-guard';
 import { logger } from './utils/logger';
 import { decryptKey } from './utils/wallet.crypto';
 import { TweetMonitor, Tweet } from './monitor/tweet.monitor';
@@ -12,13 +13,16 @@ import {
   deletePosition,
   findLatestBuyBefore,
   insertTrade,
+  listPositions,
   listRecentSells,
   listSellSummaries,
+  updatePositionState,
   upsertPosition,
   getPaperAccount,
   createPaperAccount,
   listPaperTradesForLedger,
 } from './db/repo';
+import { rowToActivePosition } from './strategy/position-restore';
 import {
   startDashboardServer,
   stopDashboardServer,
@@ -101,6 +105,11 @@ interface SellSignal {
 }
 
 let sellTraceCounter = 0;
+
+// ── Stage 9b-A: LIVE-mode startup guard message ────────────────
+// Set by main() via enforceStartupMode() before anything starts; consumed
+// once inside start() after Telegram is available (single alert, then cleared).
+let startupForcedMessage: string | null = null;
 
 // ─── Latency instrumentation helpers ───────────────────────────
 // O(1) in-memory recorder ops, always try/catch, never awaited on the hot
@@ -205,6 +214,8 @@ class ElonSniper {
   private paperLedger: PaperLedger | null = null;
   private paperAccountStartUsd = 0;
   private lastInsufficientCapitalAlert = 0;
+  // Stage 9c: per-position throttle for peak/currentPrice DB syncs (30s).
+  private lastPeakPersistAt = new Map<string, number>();
 
   constructor() {
     this.connection  = new Connection(CONFIG.RPC_URL, 'confirmed');
@@ -282,6 +293,13 @@ class ElonSniper {
       },
     });
     telegram.startPolling();
+
+    // Stage 9b-A: single forced-paper warning after Telegram is available.
+    if (startupForcedMessage) {
+      const msg = startupForcedMessage;
+      startupForcedMessage = null;
+      await telegram.alertError(msg).catch(() => {});
+    }
 
     await logEvent('START', `Bot started — mode: ${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}`);
     await telegram.alertTweetDetected(
@@ -489,80 +507,15 @@ class ElonSniper {
 
     // BUY trace fallback: finish 60s after the buy if no price was ever seen.
     // No-op when the trace already finished (first price / failure path).
-    // Also arms the first-price flag for the realtime callback below.
-    let firstPriceSeen = false;
     try {
       const boughtPos = this.activePositions.get(token.mint);
       if (boughtPos && boughtPos.buyResult) scheduleBuyTraceFallback(token.mint);
     } catch { /* ignore */ }
 
-    // Subscribe to real-time price feed — also fires immediate SL/TP check
+    // Subscribe to real-time price feed — also fires immediate SL/TP check.
+    // Shared with restart-restored positions (subscribePositionFeed).
     if (this.activePositions.has(token.mint)) {
-      this.pumpListener.subscribeToTrades(token.mint, (priceInSol) => {
-        const pos = this.activePositions.get(token.mint);
-        if (!pos || !pos.token || !pos.buyResult || pos.isSelling) return;
-
-        // (D) NaN/Infinity safety: never store a non-finite or
-        // non-positive tick — a poisoned price would corrupt PnL, peak and
-        // every downstream exit decision.
-        if (!Number.isFinite(priceInSol) || priceInSol <= 0) return;
-        const tickUsd = priceInSol * this.solPriceUsd;
-        if (!Number.isFinite(tickUsd) || tickUsd <= 0) return;
-        pos.currentPriceUsd = tickUsd;
-        if (!Number.isFinite(pos.entryPriceUsd) || pos.entryPriceUsd <= 0) return;
-
-        const pnl = (pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100;
-
-        // Latency: first observed post-buy price ends the BUY trace.
-        if (!firstPriceSeen) {
-          firstPriceSeen = true;
-          try {
-            safeMark(buyId, 'first_price_seen');
-            noteSlippage(buyId, 'firstPricePct', traceRecorder.getNote(buyId, 'entryPriceUsd'), pos.currentPriceUsd);
-          } catch { /* ignore */ }
-          finishBuyTrace(buyId, 'bought');
-        }
-
-        updatePeak(pos, pnl);
-        const exit = evaluateExit(pos, pnl, {
-          AUTO_SELL: CONFIG.AUTO_SELL,
-          TP1_PERCENT: CONFIG.TP1_PERCENT,
-          TP2_PERCENT: CONFIG.TP2_PERCENT,
-          STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
-          TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
-          TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
-          MOONBAG_TRAIL_PERCENT: CONFIG.MOONBAG_TRAIL_PERCENT,
-        });
-
-        // Immediate TP1 check.
-        // Single-flight: runTp1Sell claims isSelling synchronously and
-        // re-verifies map membership; no await runs between this decision
-        // and its claim, so the poll loop cannot interleave a second sell.
-        if (exit.action === 'tp1') {
-          logger.info(`🎯 TP1 (realtime) +${pnl.toFixed(1)}%: ${token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
-          this.runTp1Sell(token.mint, pos, pnl, 'realtime').catch(() => {});
-          return;
-        }
-
-        // Immediate TP2 / full TP check
-        if (exit.action === 'tp2') {
-          this.executeTp2TakeProfit(token.mint, pos, pnl, true, { action: 'tp2', pnlPct: pnl, source: 'realtime' }).catch(() => {});
-          return;
-        }
-
-        // Immediate SL check
-        if (exit.action === 'sl') {
-          logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${token.symbol}`);
-          this.runFullSell(token.mint, pos, `${exit.reason} (realtime)`, { action: 'sl', pnlPct: pnl, source: 'realtime' }).catch(() => {});
-          return;
-        }
-
-        // Trailing SL after TP1 / trailing TP / moonbag remainder trail
-        if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp' || exit.action === 'moonbag-trail') {
-          logger.info(`🛑 ${exit.reason} (realtime): ${token.symbol} ${pnl.toFixed(1)}%`);
-          this.runFullSell(token.mint, pos, exit.reason, { action: exit.action, pnlPct: pnl, source: 'realtime' }).catch(() => {});
-        }
-      });
+      this.subscribePositionFeed(token.mint);
     }
 
     // Telegram alert
@@ -571,6 +524,81 @@ class ElonSniper {
       const cur = this.activePositions.get(token.mint);
       if (cur && isPlaceholder(cur)) this.activePositions.delete(token.mint);
     }
+  }
+
+  /**
+   * Subscribe a live position to the PumpPortal realtime trade feed.
+   * Shared by freshly bought positions and restart-restored positions —
+   * the exit logic lives here exactly once (no duplication).
+   */
+  private subscribePositionFeed(mint: string): void {
+    const buyId = mint;
+    let firstPriceSeen = false;
+    this.pumpListener.subscribeToTrades(mint, (priceInSol) => {
+      const pos = this.activePositions.get(mint);
+      if (!pos || !pos.token || !pos.buyResult || pos.isSelling) return;
+
+      // (D) NaN/Infinity safety: never store a non-finite or
+      // non-positive tick — a poisoned price would corrupt PnL, peak and
+      // every downstream exit decision.
+      if (!Number.isFinite(priceInSol) || priceInSol <= 0) return;
+      const tickUsd = priceInSol * this.solPriceUsd;
+      if (!Number.isFinite(tickUsd) || tickUsd <= 0) return;
+      pos.currentPriceUsd = tickUsd;
+      if (!Number.isFinite(pos.entryPriceUsd) || pos.entryPriceUsd <= 0) return;
+
+      const pnl = (pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100;
+
+      // Latency: first observed post-buy price ends the BUY trace.
+      if (!firstPriceSeen) {
+        firstPriceSeen = true;
+        try {
+          safeMark(buyId, 'first_price_seen');
+          noteSlippage(buyId, 'firstPricePct', traceRecorder.getNote(buyId, 'entryPriceUsd'), pos.currentPriceUsd);
+        } catch { /* ignore */ }
+        finishBuyTrace(buyId, 'bought');
+      }
+
+      updatePeak(pos, pnl);
+      const exit = evaluateExit(pos, pnl, {
+        AUTO_SELL: CONFIG.AUTO_SELL,
+        TP1_PERCENT: CONFIG.TP1_PERCENT,
+        TP2_PERCENT: CONFIG.TP2_PERCENT,
+        STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
+        TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
+        TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
+        MOONBAG_TRAIL_PERCENT: CONFIG.MOONBAG_TRAIL_PERCENT,
+      });
+
+      // Immediate TP1 check.
+      // Single-flight: runTp1Sell claims isSelling synchronously and
+      // re-verifies map membership; no await runs between this decision
+      // and its claim, so the poll loop cannot interleave a second sell.
+      if (exit.action === 'tp1') {
+        logger.info(`🎯 TP1 (realtime) +${pnl.toFixed(1)}%: ${pos.token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
+        this.runTp1Sell(mint, pos, pnl, 'realtime').catch(() => {});
+        return;
+      }
+
+      // Immediate TP2 / full TP check
+      if (exit.action === 'tp2') {
+        this.executeTp2TakeProfit(mint, pos, pnl, true, { action: 'tp2', pnlPct: pnl, source: 'realtime' }).catch(() => {});
+        return;
+      }
+
+      // Immediate SL check
+      if (exit.action === 'sl') {
+        logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${pos.token.symbol}`);
+        this.runFullSell(mint, pos, `${exit.reason} (realtime)`, { action: 'sl', pnlPct: pnl, source: 'realtime' }).catch(() => {});
+        return;
+      }
+
+      // Trailing SL after TP1 / trailing TP / moonbag remainder trail
+      if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp' || exit.action === 'moonbag-trail') {
+        logger.info(`🛑 ${exit.reason} (realtime): ${pos.token.symbol} ${pnl.toFixed(1)}%`);
+        this.runFullSell(mint, pos, exit.reason, { action: exit.action, pnlPct: pnl, source: 'realtime' }).catch(() => {});
+      }
+    });
   }
 
   /** Fire-and-forget security check — sell immediately if honeypot found post-buy */
@@ -832,10 +860,16 @@ class ElonSniper {
           entryPrice: token.priceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
           tweetText: tweetText?.slice(0, 500), dex: token.dex,
+          mcapUsd: token.mcapUsd, tp1Hit: false, tp2Hit: false,
+          moonbag: false, remainingTokens: result.outputAmount,
+          peakPnlPercent: null, currentPriceUsd: token.priceUsd,
         },
         {
           entryPrice: token.priceUsd, solSpent: solAmount,
           tokenAmount: result.outputAmount, txSignature: result.txSignature,
+          mcapUsd: token.mcapUsd, tp1Hit: false, tp2Hit: false,
+          moonbag: false, remainingTokens: result.outputAmount,
+          currentPriceUsd: token.priceUsd,
         },
       ),
       logEvent('BUY', `Bought ${token.symbol} with ${solAmount} SOL`, {
@@ -906,6 +940,9 @@ class ElonSniper {
     finishSellTrace(sellId, 'sold');
 
     position.remainingTokens -= tokensToSell;
+    // Stage 9c: persist remainder fire-and-forget (cost-basis scaling is
+    // owned by the caller, which persists again after scaling).
+    this.persistPositionState(mint, position);
     this.totalPnlSol += pnlSol;
     this.registerClosedTradeRisk(pnlSol);
 
@@ -1027,6 +1064,84 @@ class ElonSniper {
     return true;
   }
 
+  // ─── Stage 9c: restart-recovery persistence ────────────────
+  // Fire-and-forget Position row syncs — never awaited on the sell/buy hot
+  // path, all errors swallowed, so trading never blocks on the DB.
+
+  /** Sync flag/cost-basis state after tp1Hit/tp2Hit/moonbag/remainingTokens/solSpent change. */
+  private persistPositionState(mint: string, position: ActivePosition): void {
+    try {
+      void updatePositionState(mint, {
+        tp1Hit: position.tp1Hit,
+        tp2Hit: position.tp2Hit,
+        moonbag: position.moonbag,
+        remainingTokens: position.remainingTokens,
+        solSpent: position.solSpent,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  /** Sync peak/currentPrice at most every 30s per position (poll loop). */
+  private persistPeakThrottled(mint: string, position: ActivePosition): void {
+    try {
+      const now = Date.now();
+      const last = this.lastPeakPersistAt.get(mint) ?? 0;
+      if (now - last < 30_000) return;
+      this.lastPeakPersistAt.set(mint, now);
+      void updatePositionState(mint, {
+        peakPnlPercent: Number.isFinite(position.peakPnlPercent)
+          ? position.peakPnlPercent as number
+          : null,
+        currentPriceUsd: Number.isFinite(position.currentPriceUsd)
+          ? position.currentPriceUsd
+          : 0,
+      }).catch(() => {});
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * Restart recovery: reload persisted Position rows into activePositions.
+   * Must be called from main() after initDb (and after the paper
+   * account/ledger init) and BEFORE the poll loop and listeners start.
+   * Each restored position is re-subscribed to the realtime trade feed via
+   * subscribePositionFeed (same path as a fresh buy). Rows that are
+   * unusable are deleted from the DB and logged. Max-hold keeps counting
+   * from the original openedAt (entryTime). Never throws.
+   */
+  async restorePositionsFromDb(): Promise<number> {
+    let rows;
+    try {
+      rows = await listPositions();
+    } catch (err) {
+      logger.warn(`Position restore skipped (DB read failed): ${(err as Error)?.message ?? err}`);
+      return 0;
+    }
+    if (rows.length === 0) return 0;
+    const now = Date.now();
+    let restored = 0;
+    for (const row of rows) {
+      let pos = null;
+      try {
+        pos = rowToActivePosition(row, now);
+      } catch {
+        pos = null;
+      }
+      if (!pos) {
+        logger.warn(`🗑 Deleting unusable Position row: ${row.tokenMint || '(empty mint)'}`);
+        try { await deletePosition(row.tokenMint); } catch { /* ignore */ }
+        continue;
+      }
+      this.activePositions.set(pos.token.mintAddress, pos);
+      this.subscribePositionFeed(pos.token.mintAddress);
+      restored++;
+      logger.info(`♻️ Restored position: ${pos.token.symbol} (${pos.token.mintAddress.slice(0, 8)}) entry $${pos.entryPriceUsd.toExponential(3)} tp1=${pos.tp1Hit} moonbag=${pos.moonbag}`);
+    }
+    if (restored > 0) {
+      await telegram.alertError(`♻️ Restored ${restored} posisi setelah restart`).catch(() => {});
+    }
+    return restored;
+  }
+
   /**
    * Revert optimistic flags, arm the sell backoff, send the scheduled
    * Telegram alert, and release the single-flight claim. Returns false so
@@ -1100,6 +1215,8 @@ class ElonSniper {
       position.solSpent = position.solSpent * (1 - CONFIG.TP1_SELL_PERCENT / 100);
       recordSellSuccess(position);
       position.isSelling = false;
+      // Stage 9c: persist TP1 state fire-and-forget.
+      this.persistPositionState(mint, position);
       return true;
     } catch {
       return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
@@ -1219,6 +1336,8 @@ class ElonSniper {
           logger.info(`📈 ${position.token.symbol} | entry: $${position.entryPriceUsd.toExponential(3)} | now: $${position.currentPriceUsd.toExponential(3)} | pnl: ${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(1)}%`);
 
           updatePeak(position, pnlPercent);
+          // Stage 9c: sync peak/currentPrice at most every 30s per position.
+          this.persistPeakThrottled(mint, position);
           const exit = evaluateExit(position, pnlPercent, {
             AUTO_SELL: CONFIG.AUTO_SELL,
             TP1_PERCENT: CONFIG.TP1_PERCENT,
@@ -1592,6 +1711,8 @@ class ElonSniper {
         position.moonbag = true;
         recordSellSuccess(position);
         position.isSelling = false;
+        // Stage 9c: persist moonbag state fire-and-forget.
+        this.persistPositionState(mint, position);
         return true;
       }
 
@@ -1636,6 +1757,14 @@ function fmtK(n: number): string {
 // ─── Entry point ──────────────────────────────────────────────────
 
 async function main() {
+  // Stage 9b-A: force PAPER mode at startup when LIVE is requested but not
+  // unlocked — runs right after config load, before anything starts.
+  const startupGuard = enforceStartupMode(CONFIG);
+  if (startupGuard.forced && startupGuard.message) {
+    logger.error(startupGuard.message);
+    startupForcedMessage = startupGuard.message;
+  }
+
   const sniper = new ElonSniper();
 
   const shutdown = async () => {
@@ -1654,6 +1783,9 @@ async function main() {
 
   await initDb();
   await sniper.initPaperLedger();
+  // Stage 9c: reload persisted positions BEFORE the poll loop and listeners
+  // start (those begin inside sniper.start()).
+  await sniper.restorePositionsFromDb();
   await sniper.start();
 }
 

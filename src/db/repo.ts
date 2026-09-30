@@ -188,6 +188,26 @@ export async function deletePosition(tokenMint: string, dbOverride?: Db) {
   await d.delete(positions).where(eq(positions.tokenMint, tokenMint));
 }
 
+/**
+ * Stage 9c: patch live state columns of a persisted Position row
+ * (tp1Hit/tp2Hit/moonbag/remainingTokens/solSpent/peakPnlPercent/
+ * currentPriceUsd/mcapUsd). Callers on the sell/buy hot path must invoke
+ * this fire-and-forget (never await) and swallow errors.
+ */
+export async function updatePositionState(
+  tokenMint: string,
+  patch: Partial<NewPosition>,
+  dbOverride?: Db,
+) {
+  const d = await handle(dbOverride);
+  const [row] = await d
+    .update(positions)
+    .set(patch)
+    .where(eq(positions.tokenMint, tokenMint))
+    .returning();
+  return row;
+}
+
 // ─── Paper account ────────────────────────────────────────────
 
 /** The singleton 'main' paper account, or undefined when never created. */

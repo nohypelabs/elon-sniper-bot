@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { CONFIG } from './index';
+import { liveModeBlocked } from './live-guard';
 import { logger } from '../utils/logger';
 
 export const EDITABLE_CONFIG = [
@@ -25,10 +26,10 @@ const INTEGER_KEYS = new Set<string>(['MAX_SLIPPAGE_BPS', 'PUMP_MAX_POSITIONS', 
 export interface ConfigRange { min: number; max: number }
 
 export const RANGES: Record<string, ConfigRange> = {
-  BUY_AMOUNT_SOL: { min: 0.001, max: 10 },
+  BUY_AMOUNT_SOL: { min: 0.001, max: 2 },
   BUY_AMOUNT_USD: { min: 10, max: 1000 },
-  MAX_SLIPPAGE_BPS: { min: 1, max: 5000 },
-  STOP_LOSS_PERCENT: { min: 1, max: 99 },
+  MAX_SLIPPAGE_BPS: { min: 1, max: 2500 },
+  STOP_LOSS_PERCENT: { min: 1, max: 25 },
   TP1_PERCENT: { min: 1, max: 1000 },
   TP1_SELL_PERCENT: { min: 1, max: 100 },
   TP2_PERCENT: { min: 1, max: 10000 },
@@ -37,7 +38,9 @@ export const RANGES: Record<string, ConfigRange> = {
   PRIORITY_FEE_BUY_SOL: { min: 0, max: 0.01 },
   PRIORITY_FEE_SELL_SOL: { min: 0, max: 0.01 },
   MAX_FEE_SOL: { min: 0, max: 0.01 },
-  PUMP_MAX_POSITIONS: { min: 1, max: 20 },
+  PUMP_MAX_POSITIONS: { min: 1, max: 10 },
+  // ── Stage 9b-A note: env may still say 0 (max-hold disabled at boot), but
+  // runtime edits may not set 0 — see checkHoldMinutesRange() below.
   PUMP_MAX_HOLD_MINUTES: { min: 0, max: 1440 },
   PUMP_MIN_DEV_BUY_SOL: { min: 0, max: 1000 },
   PUMP_MAX_DEV_BUY_SOL: { min: 0, max: 1000 },
@@ -52,6 +55,9 @@ const NUMBER_LITERAL = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
 /** Range/integer check shared by parseValue (raw text) and tryApplyConfig (typed values). */
 function checkNumber(key: string, n: number): string | null {
+  // ── Stage 9b-A: runtime edits may not disable max-hold (env boot value 0
+  // is still allowed; validateConfig() permits an existing 0).
+  if (key === 'PUMP_MAX_HOLD_MINUTES') return checkHoldMinutesRange(n);
   const range = RANGES[key];
   if (range) {
     if (n < range.min || n > range.max) {
@@ -101,6 +107,12 @@ export function resolveKey(input: string): EditableKey | null {
   return (EDITABLE_CONFIG as readonly string[]).includes(upper) ? (upper as EditableKey) : null;
 }
 
+export function checkHoldMinutesRange(n: number): string | null {
+  if (!Number.isInteger(n)) return 'PUMP_MAX_HOLD_MINUTES harus bilangan bulat';
+  if (n < 1 || n > 1440) return 'PUMP_MAX_HOLD_MINUTES harus antara 1 dan 1440';
+  return null;
+}
+
 /** Parse raw text into the right type for `key`, or return an error string. */
 export function parseValue(key: string, raw: string): number | boolean | string {
   if (BOOLEAN_KEYS.has(key)) {
@@ -143,12 +155,27 @@ export function validateConfig(merged: Record<string, unknown>): string | null {
     return 'PUMP_MIN_MCAP_SOL harus <= PUMP_MAX_MCAP_SOL';
   }
 
+  // ── Stage 9b-A: TP1 + moonbag may not exceed the full position (separate
+  // block so a 3-way merge with the other agent's edits stays trivial).
+  const tp1sell = num('TP1_SELL_PERCENT');
+  const moonbagPct = num('MOONBAG_PERCENT');
+  if (
+    tp1sell !== null && moonbagPct !== null &&
+    merged['MOONBAG_ENABLED'] !== false &&
+    tp1sell + moonbagPct > 100
+  ) {
+    return 'TP1_SELL_PERCENT + MOONBAG_PERCENT harus <= 100';
+  }
+
   return null;
 }
 
 export interface TryApplyOptions {
   config?: Record<string, any>;
   envPath?: string;
+  // ── Stage 9b-A: LIVE-mode unlock override (separate field; defaults to the
+  // real CONFIG value so tests can inject without touching the singleton).
+  liveAllowed?: boolean;
 }
 
 const ALLOWED_KEYS = new Set<string>([...EDITABLE_CONFIG, 'PAPER_TRADING']);
@@ -173,6 +200,14 @@ export function tryApplyConfig(
   // (a) only EDITABLE_CONFIG plus PAPER_TRADING can be changed.
   for (const key of Object.keys(values)) {
     if (!ALLOWED_KEYS.has(key)) return `Key tidak dikenal: ${key}`;
+  }
+
+  // ── Stage 9b-A: LIVE-mode guard (separate block; dashboard POST goes
+  // through here too). PAPER_TRADING=false needs the env unlock.
+  if (values['PAPER_TRADING'] === false) {
+    const liveAllowed = opts?.liveAllowed ?? (CONFIG as Record<string, any>).LIVE_TRADING_ALLOWED === true;
+    const blocked = liveModeBlocked(false, liveAllowed);
+    if (blocked) return blocked;
   }
 
   // (b) re-validate every value: callers may bypass parseValue.
