@@ -381,6 +381,40 @@ describe('BUY_AMOUNT_USD', () => {
   });
 });
 
+// ── MOONBAG_TRAIL_PERCENT (Stage 9a: moonbag remainder management) ──
+
+describe('MOONBAG_TRAIL_PERCENT', () => {
+  it('is editable with the moontrail alias', () => {
+    assert.ok((EDITABLE_CONFIG as readonly string[]).includes('MOONBAG_TRAIL_PERCENT'));
+    assert.equal(resolveKey('moontrail'), 'MOONBAG_TRAIL_PERCENT');
+    assert.equal(resolveKey('MOONBAG_TRAIL_PERCENT'), 'MOONBAG_TRAIL_PERCENT');
+  });
+
+  it('accepts 5..90 and rejects outside via tryApplyConfig', () => {
+    const { envPath } = envFile('MOONBAG_TRAIL_PERCENT=30\n');
+    const config: Record<string, any> = { MOONBAG_TRAIL_PERCENT: 30 };
+    assert.equal(tryApplyConfig({ MOONBAG_TRAIL_PERCENT: 5 }, { config, envPath }), null);
+    assert.equal(config.MOONBAG_TRAIL_PERCENT, 5);
+    assert.equal(tryApplyConfig({ MOONBAG_TRAIL_PERCENT: 90 }, { config, envPath }), null);
+    assert.equal(config.MOONBAG_TRAIL_PERCENT, 90);
+    assert.match(tryApplyConfig({ MOONBAG_TRAIL_PERCENT: 4.99 }, { config, envPath }) as string, /antara 5 dan 90/);
+    assert.match(tryApplyConfig({ MOONBAG_TRAIL_PERCENT: 91 }, { config, envPath }) as string, /antara 5 dan 90/);
+    assert.equal(config.MOONBAG_TRAIL_PERCENT, 90);
+  });
+
+  it('parseValue enforces the same bounds', () => {
+    assert.equal(parseValue('MOONBAG_TRAIL_PERCENT', '5'), 5);
+    assert.equal(parseValue('MOONBAG_TRAIL_PERCENT', '90'), 90);
+    assert.equal(typeof parseValue('MOONBAG_TRAIL_PERCENT', '4'), 'string');
+    assert.equal(typeof parseValue('MOONBAG_TRAIL_PERCENT', '91'), 'string');
+  });
+
+  it('validateConfig is unchanged (no cross-field rule on the trail)', () => {
+    assert.equal(validateConfig({ ...TYPICAL, MOONBAG_TRAIL_PERCENT: 5 }), null);
+    assert.equal(validateConfig({ ...TYPICAL, MOONBAG_TRAIL_PERCENT: 90 }), null);
+  });
+});
+
 // ── applyConfig ──────────────────────────────────────────────────
 
 describe('applyConfig', () => {

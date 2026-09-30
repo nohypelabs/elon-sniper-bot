@@ -6,7 +6,9 @@
  * implementation with identical priority order.
  *
  * Priority (matches src/index.ts):
+ *  (a0) none if pnl is non-finite (NaN/Infinity safety)
  *  (a) none if !AUTO_SELL or isSelling
+ *  (a2) moonbag positions: ONLY moonbag-trail (ratio-based) may fire
  *  (b) TP1 when !tp1Hit && pnl >= TP1
  *  (c) TP2 when (tp1Hit && !tp2Hit && !TRAILING_TP_ENABLED && pnl >= TP2)
  *       OR (!tp1Hit && pnl >= TP2)   [fallback: gapped past TP2]
@@ -24,6 +26,8 @@ export interface ExitConfig {
   STOP_LOSS_PERCENT: number;
   TRAILING_TP_ENABLED: boolean;
   TRAILING_TP_DROP_PERCENT: number;
+  /** Ratio-based give-back allowed on a moonbag remainder, in percent (0 = disabled). */
+  MOONBAG_TRAIL_PERCENT: number;
 }
 
 export interface ExitState {
@@ -31,6 +35,8 @@ export interface ExitState {
   tp2Hit: boolean;
   isSelling: boolean;
   peakPnlPercent?: number;
+  /** True once a TP2-with-moonbag partial sell kept a remainder. */
+  moonbag?: boolean;
 }
 
 export type ExitAction =
@@ -39,16 +45,35 @@ export type ExitAction =
   | { action: 'tp2' }
   | { action: 'sl'; reason: string }
   | { action: 'trailing-sl'; reason: string }
-  | { action: 'trailing-tp'; reason: string };
+  | { action: 'trailing-tp'; reason: string }
+  | { action: 'moonbag-trail'; reason: string };
 
-/** Record the highest PnL seen. Monotonic non-decreasing. */
+/** Record the highest PnL seen. Monotonic non-decreasing; ignores non-finite input. */
 export function updatePeak(state: ExitState, pnl: number): void {
-  state.peakPnlPercent = Math.max(state.peakPnlPercent ?? pnl, pnl);
+  if (!Number.isFinite(pnl)) return;
+  const cur = state.peakPnlPercent;
+  state.peakPnlPercent = Number.isFinite(cur) ? Math.max(cur as number, pnl) : pnl;
 }
 
 export function evaluateExit(state: ExitState, pnl: number, cfg: ExitConfig): ExitAction {
+  // (a0) non-finite PnL can never trigger an exit (NaN/Infinity safety)
+  if (!Number.isFinite(pnl)) return { action: 'none' };
+
   // (a) master gates
   if (!cfg.AUTO_SELL || state.isSelling) return { action: 'none' };
+
+  // (a2) moonbag remainder: ONLY the ratio-based moonbag-trail may fire.
+  // Exit when (1 + pnl/100) <= (1 + peak/100) * (1 - TRAIL/100).
+  if (state.moonbag) {
+    const peak = state.peakPnlPercent ?? pnl;
+    const trail = cfg.MOONBAG_TRAIL_PERCENT;
+    if (Number.isFinite(peak) && Number.isFinite(trail) && trail > 0) {
+      if ((1 + pnl / 100) <= (1 + peak / 100) * (1 - trail / 100)) {
+        return { action: 'moonbag-trail', reason: `moonbag-trail (peak +${peak.toFixed(0)}%)` };
+      }
+    }
+    return { action: 'none' };
+  }
 
   // (b) TP1
   if (!state.tp1Hit && pnl >= cfg.TP1_PERCENT) return { action: 'tp1' };

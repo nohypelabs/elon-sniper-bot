@@ -109,6 +109,7 @@ export function renderConfig(config: Record<string, any>): string {
   const tp2 = safeNum(config, 'TP2_PERCENT', 0);
   const moonbagOn = safeBool(config, 'MOONBAG_ENABLED');
   const moonbagPct = safeNum(config, 'MOONBAG_PERCENT', 0);
+  const moonTrail = safeNum(config, 'MOONBAG_TRAIL_PERCENT', 30);
   const slRaw = safeNum(config, 'STOP_LOSS_PERCENT', 0);
   const slShown = Math.min(slRaw, 25);
   const slLine = slRaw > 25
@@ -135,6 +136,7 @@ export function renderConfig(config: Record<string, any>): string {
     `🎯 TP1: +${tp1}% (jual ${tp1sell}%)`,
     `🎯 TP2: +${tp2}%`,
     `🌙 Moonbag: ${moonbagOn ? `${moonbagPct}%` : 'OFF'}`,
+    `🌠 Moonbag Trail: ${moonTrail}%`,
     slLine,
     `📉 Slippage: ${slippage}%`,
     `🤖 Auto Sell: ${autoSell}`,

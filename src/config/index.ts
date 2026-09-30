@@ -89,6 +89,9 @@ export const CONFIG = {
   TP2_PERCENT:      parseFloat(process.env.TP2_PERCENT || '80'),   // second TP — sell all
   MOONBAG_ENABLED:  process.env.MOONBAG_ENABLED !== 'false',
   MOONBAG_PERCENT:  parseFloat(process.env.MOONBAG_PERCENT || '15'),
+  // Moonbag remainder management: exit the kept remainder when its value
+  // ratio falls MOONBAG_TRAIL_PERCENT below the peak ratio (Stage 9a).
+  MOONBAG_TRAIL_PERCENT: parseFloat(process.env.MOONBAG_TRAIL_PERCENT || '30'),
 
   // Trailing TP: after TP1 the rest rides (no fixed TP2) and exits when price
   // falls TRAILING_TP_DROP_PERCENT points below its peak PnL (floor: breakeven).

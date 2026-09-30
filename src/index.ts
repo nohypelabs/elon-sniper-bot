@@ -31,6 +31,13 @@ import { computeBuySol } from './paper/sizing';
 import { PaperLedger } from './paper/ledger';
 import { PumpFunListener, NewPumpToken } from './scanner/pumpfun.listener';
 import { updatePeak, evaluateExit } from './strategy/exit-rules';
+import {
+  canAttemptSell,
+  isPlaceholder,
+  recordSellFailure,
+  recordSellSuccess,
+  shouldAlertSellFailure,
+} from './strategy/sell-guard';
 import { refreshEntry } from './strategy/entry-price';
 import { slippagePercent, type Trace } from './metrics/latency';
 import {
@@ -53,9 +60,38 @@ interface ActivePosition {
   tp1Hit: boolean;
   tp2Hit: boolean;
   isSelling: boolean;  // prevent double-sell race condition
+  sellFailures: number; // consecutive sell failures (see sell-guard.ts)
+  nextSellAttemptAt: number; // epoch ms gate for the next sell attempt
+  moonbag: boolean; // true once a TP2-with-moonbag sell kept a remainder
   peakPnlPercent?: number; // highest PnL seen, for trailing TP
   tweetText?: string;
 }
+
+// ─── Sell single-flight claim protocol (Stage 9a fix B) ───────────
+// Exactly one seller may own a position at a time. The realtime trade
+// callback and the 3s poll loop (plus manual Telegram/dashboard sells and
+// the honeypot emergency sell) all funnel through runTp1Sell /
+// executeTp2TakeProfit / runFullSell, which implement this protocol:
+//
+//  1. Synchronously verify the position is still live
+//     (`activePositions.get(mint) === position`) and unclaimed
+//     (`!position.isSelling`), and that the sell backoff gate has expired
+//     (`canAttemptSell`). Manual sells skip only the backoff gate.
+//  2. Synchronously set `position.isSelling = true` BEFORE any await.
+//     Because JS runs each synchronous prefix atomically, the first
+//     claimant wins and every other path sees `isSelling` and backs off —
+//     the poll loop and the realtime callback can never sell the same
+//     position twice, even though the poll loop awaits (DexScreener) between
+//     observing a price and deciding to sell: it re-checks (1) after every
+//     such await before claiming.
+//  3. On success the executors (executeSell / executePartialSell) persist
+//     the trade and mutate cost basis; the claimant then clears the failure
+//     counters. On ANY failure or exception the claimant reverts the
+//     optimistic flags it set (tp1Hit/tp2Hit), arms the backoff, sends the
+//     scheduled Telegram alert, and releases `isSelling` in a `finally` —
+//     so a failed sell never bricks the position.
+// Optimistic `solSpent` scaling happens only after a confirmed success, by
+// the fraction actually sold.
 
 /** Exit-signal context carried into the sell executors for SELL traces. */
 interface SellSignal {
@@ -141,7 +177,8 @@ function manualSellSignal(reason: string, pnlPct: number): SellSignal {
 
 function pnlOf(position: ActivePosition): number {
   try {
-    if (position.entryPriceUsd <= 0) return 0;
+    if (!Number.isFinite(position.entryPriceUsd) || position.entryPriceUsd <= 0) return 0;
+    if (!Number.isFinite(position.currentPriceUsd)) return 0;
     return ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100;
   } catch { return 0; }
 }
@@ -319,10 +356,22 @@ class ElonSniper {
       tp1Hit: false,
       tp2Hit: false,
       isSelling: true, // Lock while buying
+      sellFailures: 0,
+      nextSellAttemptAt: 0,
+      moonbag: false,
       tweetText: `PumpFun snipe: ${token.name}`,
     });
     safeMark(buyId, 'filters_passed');
 
+    // (E) Ghost-placeholder guard: every early return and every exception
+    // below runs this finally. If the map entry for this mint is still the
+    // buy-pending placeholder (buyResult/token never assigned because the
+    // buy path bailed out — honeypot skip, rejection, pause, max-positions,
+    // buy failure, or a throw), it is deleted so it can never brick the
+    // mint/symbol or consume a MAX_POSITIONS slot forever. A completed buy
+    // replaces the entry with a real position, which is left untouched.
+    // (The approval block keeps its own cleanup; this is the outer net.)
+    try {
     logger.info(`🎯 PumpFun snipe candidate: ${token.symbol} (${token.mint.slice(0, 8)}) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL`);
 
     await logEvent('TOKEN_FOUND', `PumpFun: ${token.symbol} | dev ${token.initialBuySol} SOL | mcap ${token.marketCapSol} SOL`, {
@@ -451,10 +500,16 @@ class ElonSniper {
     if (this.activePositions.has(token.mint)) {
       this.pumpListener.subscribeToTrades(token.mint, (priceInSol) => {
         const pos = this.activePositions.get(token.mint);
-        if (!pos || pos.isSelling) return;
+        if (!pos || !pos.token || !pos.buyResult || pos.isSelling) return;
 
-        pos.currentPriceUsd = priceInSol * this.solPriceUsd;
-        if (pos.entryPriceUsd <= 0) return;
+        // (D) NaN/Infinity safety: never store a non-finite or
+        // non-positive tick — a poisoned price would corrupt PnL, peak and
+        // every downstream exit decision.
+        if (!Number.isFinite(priceInSol) || priceInSol <= 0) return;
+        const tickUsd = priceInSol * this.solPriceUsd;
+        if (!Number.isFinite(tickUsd) || tickUsd <= 0) return;
+        pos.currentPriceUsd = tickUsd;
+        if (!Number.isFinite(pos.entryPriceUsd) || pos.entryPriceUsd <= 0) return;
 
         const pnl = (pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100;
 
@@ -476,15 +531,16 @@ class ElonSniper {
           STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
           TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
           TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
+          MOONBAG_TRAIL_PERCENT: CONFIG.MOONBAG_TRAIL_PERCENT,
         });
 
-        // Immediate TP1 check
+        // Immediate TP1 check.
+        // Single-flight: runTp1Sell claims isSelling synchronously and
+        // re-verifies map membership; no await runs between this decision
+        // and its claim, so the poll loop cannot interleave a second sell.
         if (exit.action === 'tp1') {
-          pos.tp1Hit = true;
-          pos.isSelling = true;
           logger.info(`🎯 TP1 (realtime) +${pnl.toFixed(1)}%: ${token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
-          this.executePartialSell(token.mint, pos, CONFIG.TP1_SELL_PERCENT, `TP1 +${CONFIG.TP1_PERCENT}%`, { action: 'tp1', pnlPct: pnl, source: 'realtime' })
-            .finally(() => { pos.isSelling = false; pos.solSpent *= (1 - CONFIG.TP1_SELL_PERCENT / 100); });
+          this.runTp1Sell(token.mint, pos, pnl, 'realtime').catch(() => {});
           return;
         }
 
@@ -496,23 +552,25 @@ class ElonSniper {
 
         // Immediate SL check
         if (exit.action === 'sl') {
-          pos.isSelling = true;
           logger.info(`🛑 SL (realtime) ${pnl.toFixed(1)}%: ${token.symbol}`);
-          this.executeSell(token.mint, pos, `${exit.reason} (realtime)`, { action: 'sl', pnlPct: pnl, source: 'realtime' }).catch(() => {});
+          this.runFullSell(token.mint, pos, `${exit.reason} (realtime)`, { action: 'sl', pnlPct: pnl, source: 'realtime' }).catch(() => {});
           return;
         }
 
-        // Trailing SL after TP1
-        if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp') {
-          pos.isSelling = true;
+        // Trailing SL after TP1 / trailing TP / moonbag remainder trail
+        if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp' || exit.action === 'moonbag-trail') {
           logger.info(`🛑 ${exit.reason} (realtime): ${token.symbol} ${pnl.toFixed(1)}%`);
-          this.executeSell(token.mint, pos, exit.reason, { action: exit.action, pnlPct: pnl, source: 'realtime' }).catch(() => {});
+          this.runFullSell(token.mint, pos, exit.reason, { action: exit.action, pnlPct: pnl, source: 'realtime' }).catch(() => {});
         }
       });
     }
 
     // Telegram alert
     await telegram.alertTokensFound([foundToken], `🆕 PumpFun new token: ${token.name} (${token.symbol})\nDev buy: ${token.initialBuySol} SOL | MCap: ${token.marketCapSol} SOL`);
+    } finally {
+      const cur = this.activePositions.get(token.mint);
+      if (cur && isPlaceholder(cur)) this.activePositions.delete(token.mint);
+    }
   }
 
   /** Fire-and-forget security check — sell immediately if honeypot found post-buy */
@@ -524,7 +582,12 @@ class ElonSniper {
       if (sec.isHoneypot) {
         logger.warn(`🚫 Post-buy honeypot detected: ${symbol} — emergency sell`);
         const pos = this.activePositions.get(mint);
-        if (pos) await this.executeSell(mint, pos, 'honeypot-detected');
+        // Emergency path: bypasses the backoff gate but keeps the
+        // single-flight claim, so a failed emergency sell retries instead
+        // of bricking the position.
+        if (pos && pos.token && pos.buyResult) {
+          await this.runFullSell(mint, pos, 'honeypot-detected', undefined, { respectBackoff: false });
+        }
       }
     } catch { /* ignore */ }
   }
@@ -633,12 +696,6 @@ class ElonSniper {
     await this.executeBuy(token);
   }
 
-  private async executeSellFromDashboard(mintAddress: string): Promise<void> {
-    const pos = this.activePositions.get(mintAddress);
-    if (!pos) return;
-    await this.executeSell(mintAddress, pos, 'manual-dashboard');
-  }
-
   private async executeBuy(token: FoundToken, tweetText?: string): Promise<void> {
     if (this.paused) {
       logger.warn(`Buy skipped while paused: ${token.symbol}`);
@@ -739,7 +796,7 @@ class ElonSniper {
       }
     }
 
-    const positionData = {
+    const positionData: ActivePosition = {
       token,
       buyResult: result,
       entryTime: Date.now(),
@@ -750,6 +807,9 @@ class ElonSniper {
       tp1Hit: false,
       tp2Hit: false,
       isSelling: false,
+      sellFailures: 0,
+      nextSellAttemptAt: 0,
+      moonbag: false,
       tweetText,
     };
 
@@ -789,15 +849,23 @@ class ElonSniper {
 
   // ─── Sell ──────────────────────────────────────────────────────
 
-  /** Sell a percentage of remaining tokens — does NOT close the position */
-  private async executePartialSell(mint: string, position: ActivePosition, sellPercent: number, reason: string, sellSignal?: SellSignal): Promise<void> {
+  /**
+   * Sell a percentage of remaining tokens — does NOT close the position.
+   * Pure executor: never touches isSelling/tp flags/solSpent/backoff — the
+   * claimant (runTp1Sell / executeTp2TakeProfit) owns those. Returns true
+   * only when the swap really succeeded.
+   */
+  private async executePartialSell(mint: string, position: ActivePosition, sellPercent: number, reason: string, sellSignal?: SellSignal): Promise<boolean> {
     // Latency: exit_signal at entry (or the evaluateExit moment passed in).
     const sellId = beginSellTrace(mint, position.token.symbol, sellSignal ?? manualSellSignal(reason, pnlOf(position)));
     const tokensToSell = Math.floor(position.remainingTokens * (sellPercent / 100));
-    if (tokensToSell <= 0) { finishSellTrace(sellId, 'skipped'); return; }
+    // Dust remainder rounds to zero tokens: report failure WITHOUT setting
+    // tp1Hit (this function never sets it). The caller routes dust to a
+    // full sell so the position closes instead of retrying TP1 forever.
+    if (tokensToSell <= 0) { finishSellTrace(sellId, 'skipped'); return false; }
 
     // Fetch current price for accurate PnL calculation (especially for timeout sells)
-    if (reason === 'max-hold-5min' || reason === 'max-hold-loss-5min') {
+    if (reason.startsWith('max-hold')) {
       const currentPrice = await this.fetchCurrentPriceForPnL(mint);
       if (currentPrice > 0) {
         position.currentPriceUsd = currentPrice;
@@ -815,7 +883,7 @@ class ElonSniper {
     if (!result.success) {
       logger.warn(`Partial sell failed for ${position.token.symbol}`);
       finishSellTrace(sellId, 'sell_failed');
-      return;
+      return false;
     }
     safeMark(sellId, 'sell_confirmed');
 
@@ -861,6 +929,7 @@ class ElonSniper {
 
     await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason, pnlSol, this.solPriceUsd);
     broadcastState();
+    return true;
   }
 
   private async fetchCurrentPriceForPnL(mint: string): Promise<number> {
@@ -878,13 +947,19 @@ class ElonSniper {
     return 0;
   }
 
-  private async executeSell(mint: string, position: ActivePosition, reason: string, sellSignal?: SellSignal): Promise<void> {
+  /**
+   * Full close of a position. Pure executor: never touches
+   * isSelling/tp flags/backoff — the claimant (runFullSell /
+   * executeTp2TakeProfit) owns those. Returns true only when the swap
+   * really succeeded AND the position was removed.
+   */
+  private async executeSell(mint: string, position: ActivePosition, reason: string, sellSignal?: SellSignal): Promise<boolean> {
     // Latency: exit_signal at entry (or the evaluateExit moment passed in).
     const sellId = beginSellTrace(mint, position.token.symbol, sellSignal ?? manualSellSignal(reason, pnlOf(position)));
     this.pumpListener.unsubscribeFromTrades(mint);
 
     // Fetch current price for accurate PnL calculation
-    if (reason === 'max-hold-5min' || reason === 'max-hold-loss-5min') {
+    if (reason.startsWith('max-hold')) {
       const currentPrice = await this.fetchCurrentPriceForPnL(mint);
       if (currentPrice > 0) {
         position.currentPriceUsd = currentPrice;
@@ -897,7 +972,7 @@ class ElonSniper {
       ? await this.gmgnSwap.sellToken(mint, position.remainingTokens || undefined)
       : { success: false } as any;
     if (!result.success) result = await this.jupiterSwap.sellToken(mint, position.remainingTokens || undefined);
-    if (!result.success) { finishSellTrace(sellId, 'sell_failed'); return; }
+    if (!result.success) { finishSellTrace(sellId, 'sell_failed'); return false; }
     safeMark(sellId, 'sell_confirmed');
 
     const pnlPercent = position.entryPriceUsd > 0
@@ -949,11 +1024,98 @@ class ElonSniper {
 
     await telegram.alertSellExecuted(position.token.symbol, pnlPercent, reason, pnlSol, this.solPriceUsd);
     broadcastState();
+    return true;
+  }
+
+  /**
+   * Revert optimistic flags, arm the sell backoff, send the scheduled
+   * Telegram alert, and release the single-flight claim. Returns false so
+   * claimants can `return this.releaseSellClaim(...)` directly.
+   */
+  private releaseSellClaim(mint: string, position: ActivePosition, prevTp1: boolean, prevTp2: boolean, now: number): boolean {
+    position.tp1Hit = prevTp1;
+    position.tp2Hit = prevTp2;
+    recordSellFailure(position, now);
+    if (shouldAlertSellFailure(position)) {
+      const symbol = position.token?.symbol ?? mint.slice(0, 8);
+      telegram.alertError(
+        `SELL GAGAL x${position.sellFailures} untuk ${symbol} — perlu tindakan manual`,
+      ).catch(() => {});
+    }
+    position.isSelling = false;
+    return false;
+  }
+
+  /**
+   * Guarded full close: claims isSelling synchronously, awaits the
+   * executor, then reconciles. Manual/emergency callers pass
+   * { respectBackoff: false } to bypass the retry gate (user override);
+   * automatic paths use the default gate.
+   */
+  private async runFullSell(
+    mint: string,
+    position: ActivePosition,
+    reason: string,
+    sellSignal?: SellSignal,
+    opts?: { respectBackoff?: boolean },
+  ): Promise<boolean> {
+    const now = Date.now();
+    if (this.activePositions.get(mint) !== position || position.isSelling) return false;
+    if ((opts?.respectBackoff ?? true) && !canAttemptSell(position, now)) return false;
+    position.isSelling = true;
+    const prevTp1 = position.tp1Hit;
+    const prevTp2 = position.tp2Hit;
+    try {
+      const ok = await this.executeSell(mint, position, reason, sellSignal);
+      if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+      return true;
+    } catch {
+      return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+    }
+  }
+
+  /**
+   * Guarded TP1 partial sell. Dust (partial rounds to zero tokens) is
+   * routed to a full close so the position shuts instead of retrying TP1
+   * forever. solSpent is scaled only after a confirmed success.
+   */
+  private async runTp1Sell(mint: string, position: ActivePosition, pnlPercent: number, source: 'realtime' | 'poll'): Promise<boolean> {
+    const now = Date.now();
+    if (this.activePositions.get(mint) !== position || position.isSelling) return false;
+    if (!canAttemptSell(position, now)) return false;
+    position.isSelling = true;
+    const prevTp1 = position.tp1Hit;
+    const prevTp2 = position.tp2Hit;
+    position.tp1Hit = true;
+    const signal: SellSignal = { action: 'tp1', pnlPct: pnlPercent, source };
+    try {
+      if (Math.floor(position.remainingTokens * (CONFIG.TP1_SELL_PERCENT / 100)) <= 0) {
+        logger.info(`🎯 TP1 dust (${source}): ${position.token.symbol} — closing remainder with full sell`);
+        const ok = await this.executeSell(mint, position, `TP1 +${CONFIG.TP1_PERCENT}% (dust)`, signal);
+        if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+        return true;
+      }
+      const ok = await this.executePartialSell(mint, position, CONFIG.TP1_SELL_PERCENT, `TP1 +${CONFIG.TP1_PERCENT}%`, signal);
+      if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+      position.solSpent = position.solSpent * (1 - CONFIG.TP1_SELL_PERCENT / 100);
+      recordSellSuccess(position);
+      position.isSelling = false;
+      return true;
+    } catch {
+      return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+    }
+  }
+
+  private async executeSellFromDashboard(mintAddress: string): Promise<void> {
+    const pos = this.activePositions.get(mintAddress);
+    if (!pos || !pos.token || !pos.buyResult) return;
+    await this.runFullSell(mintAddress, pos, 'manual-dashboard', undefined, { respectBackoff: false });
   }
 
   private async executeSellFromTelegram(mintAddress: string, symbol: string): Promise<void> {
     const pos = this.activePositions.get(mintAddress);
-    if (pos) await this.executeSell(mintAddress, pos, 'manual-telegram');
+    if (!pos || !pos.token || !pos.buyResult) return;
+    await this.runFullSell(mintAddress, pos, 'manual-telegram', undefined, { respectBackoff: false });
   }
 
   private async sellAllPositions(): Promise<void> {
@@ -961,8 +1123,9 @@ class ElonSniper {
       await telegram.alertError('No active positions to sell');
       return;
     }
-    for (const [mint, pos] of this.activePositions) {
-      await this.executeSell(mint, pos, 'manual-sell-all');
+    for (const [mint, pos] of [...this.activePositions]) {
+      if (!pos.token || !pos.buyResult) continue;
+      await this.runFullSell(mint, pos, 'manual-sell-all', undefined, { respectBackoff: false });
     }
   }
 
@@ -976,39 +1139,41 @@ class ElonSniper {
       for (const [mint, position] of this.activePositions) {
         try {
           if (position.isSelling) continue;
+          // Never manage buy-pending placeholders as positions.
+          if (!position.token || !position.buyResult) continue;
 
           const ageMs = Date.now() - position.entryTime;
-          const pnlNow = position.entryPriceUsd > 0
-            ? ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100
-            : 0;
+          const pnlNow = pnlOf(position);
 
           // Loss hold cap: if still red after X minutes, force-exit early.
+          // Applies to moonbag remainders too (no !tp2Hit gate) so a
+          // moonbag can never ride forever.
           if (
             position.token.dex === 'pump.fun' &&
             CONFIG.AUTO_SELL &&
-            !position.tp2Hit &&
             pnlNow < 0 &&
             ageMs > CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES * 60_000
           ) {
             logger.info(
               `⏰ LOSS HOLD CAP: ${position.token.symbol} ${pnlNow.toFixed(1)}% — selling after ${CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES}min in loss`,
             );
-            await this.executeSell(mint, position, `max-hold-loss-${CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES}min`, { action: 'max-hold', pnlPct: pnlNow, source: 'poll' });
+            await this.runFullSell(mint, position, `max-hold-loss-${CONFIG.PUMP_MAX_HOLD_LOSS_MINUTES}min`, { action: 'max-hold', pnlPct: pnlNow, source: 'poll' });
             continue;
           }
 
-          // Max hold time for pump.fun tokens
+          // Max hold time for pump.fun tokens.
+          // Applies to moonbag remainders too (no !tp2Hit gate) so a
+          // moonbag can never ride forever.
           if (
             position.token.dex === 'pump.fun' &&
             CONFIG.AUTO_SELL &&
-            !position.tp2Hit &&
             ageMs > CONFIG.PUMP_MAX_HOLD_MINUTES * 60_000
           ) {
             const pnl = position.entryPriceUsd > 0
               ? ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd * 100).toFixed(1)
               : '?';
             logger.info(`⏰ MAX HOLD: ${position.token.symbol} ${pnl}% — selling after ${CONFIG.PUMP_MAX_HOLD_MINUTES}min`);
-            await this.executeSell(mint, position, `max-hold-${CONFIG.PUMP_MAX_HOLD_MINUTES}min`, { action: 'max-hold', pnlPct: pnlOf(position), source: 'poll' });
+            await this.runFullSell(mint, position, `max-hold-${CONFIG.PUMP_MAX_HOLD_MINUTES}min`, { action: 'max-hold', pnlPct: pnlOf(position), source: 'poll' });
             continue;
           }
 
@@ -1027,7 +1192,8 @@ class ElonSniper {
               // Use DexScreener price when:
               // 1. We have no live price yet (subscription hasn't fired)
               // 2. OR DexScreener price is meaningfully different (>1%) from our live price
-              if (dexPrice > 0) {
+              // (D) Non-finite poll prices are never stored.
+              if (Number.isFinite(dexPrice) && dexPrice > 0) {
                 const livePrice = position.currentPriceUsd;
                 const diff = livePrice > 0 ? Math.abs(dexPrice - livePrice) / livePrice : 1;
                 if (livePrice === position.entryPriceUsd || diff > 0.01) {
@@ -1037,6 +1203,15 @@ class ElonSniper {
             }
           } catch { /* ignore — use live price from subscription */ }
 
+          // (B) An await (DexScreener above) ran since the top-of-loop
+          // claim check: the realtime callback may have claimed and sold
+          // this position meanwhile. Re-verify liveness and claim state
+          // before making any sell decision.
+          if (position.isSelling || this.activePositions.get(mint) !== position) continue;
+          if (!position.token || !position.buyResult) continue;
+
+          // (D) Non-finite or non-positive prices never drive exits.
+          if (!Number.isFinite(position.currentPriceUsd) || !Number.isFinite(position.entryPriceUsd)) continue;
           if (position.currentPriceUsd <= 0 || position.entryPriceUsd <= 0) continue;
 
           const pnlPercent = ((position.currentPriceUsd - position.entryPriceUsd) / position.entryPriceUsd) * 100;
@@ -1051,17 +1226,16 @@ class ElonSniper {
             STOP_LOSS_PERCENT: CONFIG.STOP_LOSS_PERCENT,
             TRAILING_TP_ENABLED: CONFIG.TRAILING_TP_ENABLED,
             TRAILING_TP_DROP_PERCENT: CONFIG.TRAILING_TP_DROP_PERCENT,
+            MOONBAG_TRAIL_PERCENT: CONFIG.MOONBAG_TRAIL_PERCENT,
           });
 
           if (exit.action !== 'none') {
-            // TP1: sell TP1_SELL_PERCENT% at TP1_PERCENT gain
+            // TP1: sell TP1_SELL_PERCENT% at TP1_PERCENT gain (guarded:
+            // claims isSelling, reverts flags + backoff on failure, scales
+            // solSpent only after success).
             if (exit.action === 'tp1') {
-              position.tp1Hit = true;
-              position.isSelling = true;
               logger.info(`🎯 TP1 +${pnlPercent.toFixed(1)}%: ${position.token.symbol} — selling ${CONFIG.TP1_SELL_PERCENT}%`);
-              await this.executePartialSell(mint, position, CONFIG.TP1_SELL_PERCENT, `TP1 +${CONFIG.TP1_PERCENT}%`, { action: 'tp1', pnlPct: pnlPercent, source: 'poll' });
-              position.solSpent = position.solSpent * (1 - CONFIG.TP1_SELL_PERCENT / 100);
-              position.isSelling = false;
+              await this.runTp1Sell(mint, position, pnlPercent, 'poll');
               continue;
             }
 
@@ -1074,17 +1248,15 @@ class ElonSniper {
 
             // Stop Loss
             if (exit.action === 'sl') {
-              position.isSelling = true;
               logger.info(`🛑 STOP LOSS ${pnlPercent.toFixed(1)}%: ${position.token.symbol}`);
-              await this.executeSell(mint, position, exit.reason, { action: 'sl', pnlPct: pnlPercent, source: 'poll' });
+              await this.runFullSell(mint, position, exit.reason, { action: 'sl', pnlPct: pnlPercent, source: 'poll' });
               continue;
             }
 
-            // Trailing SL / trailing TP after TP1
-            if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp') {
-              position.isSelling = true;
+            // Trailing SL / trailing TP after TP1, or moonbag remainder trail
+            if (exit.action === 'trailing-sl' || exit.action === 'trailing-tp' || exit.action === 'moonbag-trail') {
               logger.info(`🛑 ${exit.reason}: ${position.token.symbol} ${pnlPercent.toFixed(1)}%`);
-              await this.executeSell(mint, position, exit.reason, { action: exit.action, pnlPct: pnlPercent, source: 'poll' });
+              await this.runFullSell(mint, position, exit.reason, { action: exit.action, pnlPct: pnlPercent, source: 'poll' });
             }
           }
         } catch {
@@ -1298,6 +1470,7 @@ class ElonSniper {
     if (this.activePositions.size > 0) {
       lines.push('', '<b>Active:</b>');
       for (const [, pos] of this.activePositions) {
+        if (!pos.token || !pos.buyResult) continue; // buy-pending placeholder
         const pnl = pos.entryPriceUsd > 0
           ? ((pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100).toFixed(1)
           : '?';
@@ -1364,43 +1537,71 @@ class ElonSniper {
 
   private sleep(ms: number) { return new Promise<void>(r => setTimeout(r, ms)); }
 
+  /**
+   * Guarded TP2 take-profit. Claims isSelling synchronously; on any
+   * failure or exception reverts tp2Hit/tp1Hit, arms the backoff, alerts
+   * on schedule, and releases the claim — never bricks the position.
+   * After a successful moonbag partial sell the remainder is marked
+   * `moonbag = true` so exit-rules manage it via moonbag-trail (plus the
+   * max-hold time cap) instead of leaving it unmanaged.
+   */
   private async executeTp2TakeProfit(
     mint: string,
     position: ActivePosition,
     pnlPercent: number,
     realtime: boolean,
     sellSignal?: SellSignal,
-  ): Promise<void> {
-    position.tp2Hit = true;
+  ): Promise<boolean> {
+    const now = Date.now();
+    if (this.activePositions.get(mint) !== position || position.isSelling) return false;
+    if (!canAttemptSell(position, now)) return false;
     position.isSelling = true;
+    const prevTp1 = position.tp1Hit;
+    const prevTp2 = position.tp2Hit;
+    position.tp2Hit = true;
     const prefix = realtime ? 'realtime' : 'poll';
     const symbol = position.token.symbol;
     const tp2Signal: SellSignal = sellSignal ?? { action: 'tp2', pnlPct: pnlPercent, source: realtime ? 'realtime' : 'poll' };
 
-    const moonbagEnabled = CONFIG.MOONBAG_ENABLED && CONFIG.MOONBAG_PERCENT > 0 && CONFIG.MOONBAG_PERCENT < 100;
-    if (moonbagEnabled) {
-      const sellPct = Math.max(1, Math.min(99, 100 - CONFIG.MOONBAG_PERCENT));
-      const beforeTokens = position.remainingTokens;
-      logger.info(
-        `🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — sell ${sellPct}%, keep ${CONFIG.MOONBAG_PERCENT}% moonbag`,
-      );
-      await this.executePartialSell(
-        mint,
-        position,
-        sellPct,
-        `TP2 +${CONFIG.TP2_PERCENT}% (moonbag ${CONFIG.MOONBAG_PERCENT}% kept)`,
-        tp2Signal,
-      );
-      if (position.remainingTokens < beforeTokens) {
-        position.solSpent = position.solSpent * (1 - sellPct / 100);
+    try {
+      const moonbagEnabled = CONFIG.MOONBAG_ENABLED && CONFIG.MOONBAG_PERCENT > 0 && CONFIG.MOONBAG_PERCENT < 100;
+      if (moonbagEnabled) {
+        const sellPct = Math.max(1, Math.min(99, 100 - CONFIG.MOONBAG_PERCENT));
+        const beforeTokens = position.remainingTokens;
+        logger.info(
+          `🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — sell ${sellPct}%, keep ${CONFIG.MOONBAG_PERCENT}% moonbag`,
+        );
+        if (Math.floor(position.remainingTokens * (sellPct / 100)) <= 0) {
+          logger.info(`🎯 TP2 dust (${prefix}): ${symbol} — closing remainder with full sell`);
+          const ok = await this.executeSell(mint, position, `TP2 +${CONFIG.TP2_PERCENT}% (dust)`, tp2Signal);
+          if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+          return true;
+        }
+        const ok = await this.executePartialSell(
+          mint,
+          position,
+          sellPct,
+          `TP2 +${CONFIG.TP2_PERCENT}% (moonbag ${CONFIG.MOONBAG_PERCENT}% kept)`,
+          tp2Signal,
+        );
+        if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+        if (position.remainingTokens < beforeTokens) {
+          position.solSpent = position.solSpent * (1 - sellPct / 100);
+        }
+        position.tp1Hit = true;
+        position.moonbag = true;
+        recordSellSuccess(position);
+        position.isSelling = false;
+        return true;
       }
-      position.tp1Hit = true;
-      position.isSelling = false;
-      return;
-    }
 
-    logger.info(`🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — closing position`);
-    await this.executeSell(mint, position, `TP2 +${CONFIG.TP2_PERCENT}%`, tp2Signal);
+      logger.info(`🎯 TP2 (${prefix}) +${pnlPercent.toFixed(1)}%: ${symbol} — closing position`);
+      const ok = await this.executeSell(mint, position, `TP2 +${CONFIG.TP2_PERCENT}%`, tp2Signal);
+      if (!ok) return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+      return true;
+    } catch {
+      return this.releaseSellClaim(mint, position, prevTp1, prevTp2, now);
+    }
   }
 
   private registerClosedTradeRisk(pnlSol: number): void {

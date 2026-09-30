@@ -227,6 +227,16 @@ describe('renderConfig', () => {
     assert.ok(text.includes('🛑 Stop Loss: -25% (dibatasi 25%)'));
   });
 
+  it('shows the moonbag trail setting', () => {
+    const text = renderConfig({ ...baseConfig(), MOONBAG_TRAIL_PERCENT: 30 });
+    assert.ok(text.includes('🌠 Moonbag Trail: 30%'));
+    // Missing key falls back to the 30 default without NaN/undefined.
+    const fallback = renderConfig(baseConfig());
+    assert.ok(fallback.includes('🌠 Moonbag Trail: 30%'));
+    assert.ok(!fallback.includes('NaN'));
+    assert.ok(!fallback.includes('undefined'));
+  });
+
   it('moonbag OFF state', () => {
     const config = baseConfig();
     config.MOONBAG_ENABLED = false;
