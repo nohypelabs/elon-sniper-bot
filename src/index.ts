@@ -69,6 +69,10 @@ interface ActivePosition {
   moonbag: boolean; // true once a TP2-with-moonbag sell kept a remainder
   peakPnlPercent?: number; // highest PnL seen, for trailing TP
   tweetText?: string;
+  // Stage 10: stale-price watchdog — refreshed on every feed/DexScreener
+  // price update; ONE Telegram alert per position when older than 120s.
+  lastPriceUpdateAt: number;
+  staleAlertSent: boolean;
 }
 
 // ─── Sell single-flight claim protocol (Stage 9a fix B) ───────────
@@ -313,6 +317,10 @@ class ElonSniper {
     // PumpFun new token sniper (opt-in)
     if (CONFIG.PUMP_SNIPE_ENABLED) {
       this.pumpListener.onNewToken((token) => this.handleNewPumpToken(token));
+      // Stage 10: ONE Telegram alert if the trade feed has to fall back.
+      this.pumpListener.onFeedProblem((text) => {
+        telegram.alertError(text).catch(() => {});
+      });
       this.pumpListener.start();
       await logEvent('START', 'PumpFun sniper enabled', {
         minDevBuy: CONFIG.PUMP_MIN_DEV_BUY_SOL,
@@ -377,6 +385,8 @@ class ElonSniper {
       sellFailures: 0,
       nextSellAttemptAt: 0,
       moonbag: false,
+      lastPriceUpdateAt: Date.now(),
+      staleAlertSent: false,
       tweetText: `PumpFun snipe: ${token.name}`,
     });
     safeMark(buyId, 'filters_passed');
@@ -545,6 +555,7 @@ class ElonSniper {
       const tickUsd = priceInSol * this.solPriceUsd;
       if (!Number.isFinite(tickUsd) || tickUsd <= 0) return;
       pos.currentPriceUsd = tickUsd;
+      pos.lastPriceUpdateAt = Date.now();
       if (!Number.isFinite(pos.entryPriceUsd) || pos.entryPriceUsd <= 0) return;
 
       const pnl = (pos.currentPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100;
@@ -838,6 +849,8 @@ class ElonSniper {
       sellFailures: 0,
       nextSellAttemptAt: 0,
       moonbag: false,
+      lastPriceUpdateAt: Date.now(),
+      staleAlertSent: false,
       tweetText,
     };
 
@@ -903,6 +916,7 @@ class ElonSniper {
       const currentPrice = await this.fetchCurrentPriceForPnL(mint);
       if (currentPrice > 0) {
         position.currentPriceUsd = currentPrice;
+        position.lastPriceUpdateAt = Date.now();
         logger.info(`📊 Fetched current price for ${position.token.symbol}: $${currentPrice.toExponential(3)}`);
       }
     }
@@ -1000,6 +1014,7 @@ class ElonSniper {
       const currentPrice = await this.fetchCurrentPriceForPnL(mint);
       if (currentPrice > 0) {
         position.currentPriceUsd = currentPrice;
+        position.lastPriceUpdateAt = Date.now();
         logger.info(`📊 Fetched current price for ${position.token.symbol}: $${currentPrice.toExponential(3)}`);
       }
     }
@@ -1259,6 +1274,14 @@ class ElonSniper {
           // Never manage buy-pending placeholders as positions.
           if (!position.token || !position.buyResult) continue;
 
+          // Stage 10: stale-price watchdog — ONE alert per position when
+          // no feed/DexScreener update arrived for 120s.
+          if (!position.staleAlertSent && Date.now() - position.lastPriceUpdateAt > 120_000) {
+            position.staleAlertSent = true;
+            logger.warn(`⚠️ Stale price: ${position.token.symbol} — no price update for 120s`);
+            telegram.alertError(`⚠️ harga ${position.token.symbol} tidak update 2 menit`).catch(() => {});
+          }
+
           const ageMs = Date.now() - position.entryTime;
           const pnlNow = pnlOf(position);
 
@@ -1315,6 +1338,7 @@ class ElonSniper {
                 const diff = livePrice > 0 ? Math.abs(dexPrice - livePrice) / livePrice : 1;
                 if (livePrice === position.entryPriceUsd || diff > 0.01) {
                   position.currentPriceUsd = dexPrice;
+                  position.lastPriceUpdateAt = Date.now();
                 }
               }
             }
@@ -1477,6 +1501,7 @@ class ElonSniper {
       solBalance:       ledger ? ledger.cashSol : this.solBalance,
       solPriceUsd:      this.solPriceUsd,
       activePositions:  positions,
+      feed:             this.getFeedState(),
     };
     if (ledger) {
       const e = ledger.equity(this.paperOpenInputs(), this.solPriceUsd);
@@ -1490,6 +1515,25 @@ class ElonSniper {
       };
     }
     return state;
+  }
+
+  /** Stage 10: price-feed health for dashboard state + /status. Never throws. */
+  private getFeedState(): NonNullable<BotState['feed']> {
+    try {
+      if (!CONFIG.PUMP_SNIPE_ENABLED) {
+        return { source: 'none', connected: false, subscriptions: 0, lastUpdateAgoSec: null, reconnects: 0 };
+      }
+      const h = this.pumpListener.getFeedHealth();
+      return {
+        source: h.source,
+        connected: h.connected,
+        subscriptions: h.subscriptions,
+        lastUpdateAgoSec: h.lastUpdateAgoSec,
+        reconnects: h.reconnects,
+      };
+    } catch {
+      return { source: 'none', connected: false, subscriptions: 0, lastUpdateAgoSec: null, reconnects: 0 };
+    }
   }
 
   private getBalanceMessage(): string {
@@ -1576,9 +1620,15 @@ class ElonSniper {
 
   private getStatusMessage(): string {
     const upHours = ((Date.now() - this.startTime) / 3_600_000).toFixed(1);
+    const feed = this.getFeedState();
+    const feedAgo = feed.lastUpdateAgoSec === null ? 'never' : `${Math.round(feed.lastUpdateAgoSec)}s ago`;
+    const feedLine = feed.source === 'none'
+      ? `📡 Feed: off (pump snipe disabled)`
+      : `📡 Feed: ${feed.source} ${feed.connected ? 'connected' : 'DOWN'} | ${feed.subscriptions} subs | update ${feedAgo} | ${feed.reconnects} reconnects`;
     const lines = [
       `🤖 <b>Elon Sniper Bot</b>`,
       `Mode: <b>${CONFIG.PAPER_TRADING ? 'PAPER' : 'LIVE'}</b>`,
+      feedLine,
       `⏱ Uptime: ${upHours}h`,
       `🐦 Tweets: ${this.tweetsDetected} | 🛒 Buys: ${this.buysExecuted}`,
       `💰 SOL: ${this.solBalance.toFixed(3)} | PnL: ${this.totalPnlSol >= 0 ? '+' : ''}${this.totalPnlSol.toFixed(3)} SOL`,

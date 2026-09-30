@@ -13,8 +13,41 @@ import { logger } from '../utils/logger';
 import { CONFIG } from '../config';
 import { DevWalletChecker } from './dev-wallet.checker';
 import { TokenObserver, ObservationResult } from './token-observer';
+import { CurveFeed, CurveUpdate } from './curve-feed';
+import { deriveBondingCurve } from './bonding-curve';
 
 const PUMPPORTAL_WS = 'wss://pumpportal.fun/api/data';
+
+/**
+ * Real-time trade/price source (Stage 10). PumpPortal only answers
+ * subscribeTokenTrade when connected with a funded API key, so without one
+ * the bot prices tokens from Solana account state via CurveFeed instead.
+ */
+export type TradeSource = 'pumpportal' | 'curve';
+
+export interface FeedHealth {
+  source: TradeSource;
+  connected: boolean;
+  subscriptions: number;
+  lastUpdateAgoSec: number | null;
+  reconnects: number;
+}
+
+/** Pure selection: 'auto' uses curve unless a PumpPortal key is present. */
+export function selectTradeSource(setting: string, hasPumpPortalKey: boolean): TradeSource {
+  if (setting === 'pumpportal') return 'pumpportal';
+  if (setting === 'curve') return 'curve';
+  return hasPumpPortalKey ? 'pumpportal' : 'curve';
+}
+
+/** PumpPortal's plain-text rejection for keyless trade subscriptions. */
+export function isPumpPortalKeyRejection(msg: any): boolean {
+  const text = typeof msg?.message === 'string' ? msg.message : '';
+  return /only available when connecting with an API key/i.test(text);
+}
+
+// ONE warning per process when auto mode falls back to the curve feed.
+let feedFallbackWarned = false;
 
 export interface NewPumpToken {
   mint: string;
@@ -53,6 +86,26 @@ export class PumpFunListener {
   // Real-time price subscriptions: mint → callback(priceInSol)
   private tokenSubs = new Map<string, (priceInSol: number) => void>();
 
+  // ── Stage 10: TradeSource abstraction ──────────────────────────
+  private tradeSource: TradeSource = 'pumpportal';
+  private sourceResolved = false;
+  private curveFeed: CurveFeed | null = null;
+  private readonly curveFeedFactory: (url: string) => CurveFeed;
+  private readonly clock: () => number;
+  // mint → bondingCurveKey from every create event (newest-last, cap 2000)
+  private mintToCurve = new Map<string, string>();
+  // curve-mode refcounting: curveKey → mints using it; mint → curveKey
+  private curveMintRefs = new Map<string, Set<string>>();
+  private mintCurveSub = new Map<string, string>();
+  private feedProblemCb: ((text: string) => void) | null = null;
+  private lastFeedUpdateAt: number | null = null;
+  private pumpReconnects = 0;
+
+  constructor(opts?: { curveFeedFactory?: (url: string) => CurveFeed; now?: () => number }) {
+    this.curveFeedFactory = opts?.curveFeedFactory ?? ((url) => new CurveFeed({ url }));
+    this.clock = opts?.now ?? Date.now;
+  }
+
   // Stats
   private stats = { received: 0, passed: 0, filtered: 0 };
 
@@ -65,9 +118,14 @@ export class PumpFunListener {
     this.callback = cb;
   }
 
-  /** Subscribe to real-time price updates for a bought token */
+  /** Subscribe to real-time price updates for a bought token (cb receives priceInSol) */
   subscribeToTrades(mint: string, onPrice: (priceInSol: number) => void) {
+    this.ensureSourceResolved();
     this.tokenSubs.set(mint, onPrice);
+    if (this.tradeSource === 'curve') {
+      this.ensureCurveSub(mint);
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [mint] }));
     }
@@ -75,14 +133,56 @@ export class PumpFunListener {
 
   unsubscribeFromTrades(mint: string) {
     this.tokenSubs.delete(mint);
+    if (this.tradeSource === 'curve') {
+      this.releaseCurveSub(mint);
+      return;
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [mint] }));
     }
   }
 
+  /** Optional callback so index.ts can send ONE Telegram alert on feed problems. */
+  onFeedProblem(cb: (text: string) => void) {
+    this.feedProblemCb = cb;
+  }
+
+  getTradeSource(): TradeSource {
+    this.ensureSourceResolved();
+    return this.tradeSource;
+  }
+
+  getFeedHealth(): FeedHealth {
+    this.ensureSourceResolved();
+    const lastAgo = this.lastFeedUpdateAt === null
+      ? null
+      : Math.max(0, (this.clock() - this.lastFeedUpdateAt) / 1000);
+    if (this.tradeSource === 'curve' && this.curveFeed) {
+      const st = this.curveFeed.stats();
+      return {
+        source: 'curve',
+        connected: st.connected,
+        subscriptions: st.subscriptions,
+        lastUpdateAgoSec: this.lastFeedUpdateAt === null && st.lastUpdateAt !== null
+          ? Math.max(0, (this.clock() - st.lastUpdateAt) / 1000)
+          : lastAgo,
+        reconnects: st.reconnects,
+      };
+    }
+    return {
+      source: this.tradeSource,
+      connected: this.tradeSource === 'pumpportal' && this.ws?.readyState === WebSocket.OPEN,
+      subscriptions: this.tokenSubs.size,
+      lastUpdateAgoSec: lastAgo,
+      reconnects: this.pumpReconnects,
+    };
+  }
+
   start() {
     this.running = true;
+    this.ensureSourceResolved();
     this.connect();
+    if (this.tradeSource === 'curve') this.ensureCurveFeed();
     setInterval(() => this.pruneCache(), 60_000);
     // Print filter stats every 30s
     setInterval(() => {
@@ -101,6 +201,7 @@ export class PumpFunListener {
     // Feature 2: Token observation
     if (CONFIG.PUMP_OBSERVE_ENABLED) {
       this.observer = new TokenObserver();
+      this.observer.setFeedMode(this.tradeSource === 'curve' ? 'curve' : 'pumpportal');
       this.observer.onResult((token, result) => this.handleObservationResult(token, result));
       this.observer.start();
       logger.info(`👁 Token observer: ON (${CONFIG.PUMP_OBSERVE_SECONDS}s window, min ${CONFIG.PUMP_MIN_UNIQUE_BUYERS} buyers, ${CONFIG.PUMP_MIN_BUY_RATIO} ratio, ${CONFIG.PUMP_MIN_SOL_VELOCITY} SOL/s)`);
@@ -111,7 +212,145 @@ export class PumpFunListener {
     this.running = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.observer) this.observer.stop();
+    try { this.curveFeed?.stop(); } catch { /* ignore */ }
     this.ws?.close();
+  }
+
+  // ─── TradeSource internals ────────────────────────────────────
+
+  private pumpPortalKey(): string {
+    return (process.env.PUMPPORTAL_API_KEY || '').trim();
+  }
+
+  private pumpPortalUrl(): string {
+    const key = this.pumpPortalKey();
+    return key ? `${PUMPPORTAL_WS}?api-key=${encodeURIComponent(key)}` : PUMPPORTAL_WS;
+  }
+
+  private ensureSourceResolved(): void {
+    if (this.sourceResolved) return;
+    this.sourceResolved = true;
+    const setting = (CONFIG.PUMP_TRADE_FEED || 'auto').toLowerCase();
+    this.tradeSource = selectTradeSource(setting, this.pumpPortalKey().length > 0);
+  }
+
+  private ensureCurveFeed(): void {
+    if (this.curveFeed) return;
+    this.curveFeed = this.curveFeedFactory(CONFIG.SOLANA_WS_URL);
+    try {
+      this.curveFeed.start();
+    } catch (err) {
+      logger.warn(`CurveFeed failed to start: ${(err as Error)?.message ?? err}`);
+    }
+  }
+
+  /** Remember mint → curveKey (newest-last, pruned to 2000). */
+  private noteCurveMapping(mint: string, curveKey: string): void {
+    if (!mint || !curveKey) return;
+    if (this.mintToCurve.get(mint) === curveKey) {
+      // Refresh recency.
+      this.mintToCurve.delete(mint);
+      this.mintToCurve.set(mint, curveKey);
+      return;
+    }
+    this.mintToCurve.set(mint, curveKey);
+    while (this.mintToCurve.size > 2000) {
+      const oldest = this.mintToCurve.keys().next();
+      if (oldest.done) break;
+      this.mintToCurve.delete(oldest.value);
+    }
+  }
+
+  /** Curve key for a mint: remembered mapping, else derived PDA (restored positions). */
+  private resolveCurveKey(mint: string): string {
+    return this.mintToCurve.get(mint) || deriveBondingCurve(mint);
+  }
+
+  /** Subscribe a mint to the curve feed (refcounted per curveKey). */
+  private ensureCurveSub(mint: string): void {
+    if (this.tradeSource !== 'curve') return;
+    this.ensureCurveFeed();
+    if (!this.curveFeed) return;
+    const curveKey = this.resolveCurveKey(mint);
+    if (!curveKey) return;
+    const prev = this.mintCurveSub.get(mint);
+    if (prev === curveKey) return;
+    if (prev) this.releaseCurveSub(mint);
+    this.mintCurveSub.set(mint, curveKey);
+    let refs = this.curveMintRefs.get(curveKey);
+    if (!refs) {
+      refs = new Set();
+      this.curveMintRefs.set(curveKey, refs);
+    }
+    refs.add(mint);
+    if (refs.size === 1) {
+      try {
+        this.curveFeed.subscribe(curveKey, (u) => this.handleCurveUpdate(u));
+      } catch { /* ignore */ }
+    }
+  }
+
+  private releaseCurveSub(mint: string): void {
+    const curveKey = this.mintCurveSub.get(mint);
+    if (!curveKey) return;
+    this.mintCurveSub.delete(mint);
+    // Keep the feed alive while the observer still watches this mint.
+    if (this.tokenSubs.has(mint)) return;
+    if (this.observer?.has(mint)) return;
+    const refs = this.curveMintRefs.get(curveKey);
+    if (refs) {
+      refs.delete(mint);
+      if (refs.size === 0) {
+        this.curveMintRefs.delete(curveKey);
+        try { this.curveFeed?.unsubscribe(curveKey); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  private handleCurveUpdate(update: CurveUpdate): void {
+    try {
+      if (!update || !Number.isFinite(update.priceInSol) || update.priceInSol <= 0) return;
+      this.lastFeedUpdateAt = this.clock();
+      const refs = this.curveMintRefs.get(update.curveKey);
+      if (!refs) return;
+      for (const mint of [...refs]) {
+        const priceCb = this.tokenSubs.get(mint);
+        if (priceCb) {
+          try { priceCb(update.priceInSol); } catch { /* ignore */ }
+        }
+        if (this.observer?.has(mint)) {
+          try { this.observer.onCurveUpdate(mint, update); } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  /**
+   * PumpPortal answered a trade subscription with the keyless rejection.
+   * In auto mode switch to the curve feed at runtime (once per process).
+   */
+  private handleFeedRejection(text: string): void {
+    if (CONFIG.PUMP_TRADE_FEED !== 'auto' || this.tradeSource !== 'pumpportal') return;
+    this.tradeSource = 'curve';
+    this.observer?.setFeedMode('curve');
+    this.ensureCurveFeed();
+    // Move every live subscription (positions + observed tokens) to curve.
+    for (const mint of this.tokenSubs.keys()) {
+      try { this.ensureCurveSub(mint); } catch { /* ignore */ }
+    }
+    if (this.observer) {
+      for (const mint of this.observer.getMints()) {
+        try { this.ensureCurveSub(mint); } catch { /* ignore */ }
+      }
+    }
+    if (!feedFallbackWarned) {
+      feedFallbackWarned = true;
+      logger.warn(
+        'PumpPortal trade subscriptions need a funded API key — switched to Solana curve feed (accountSubscribe). ' +
+        `Rejection was: ${text.slice(0, 160)}`,
+      );
+      try { this.feedProblemCb?.('⚠️ PumpPortal trade feed ditolak (butuh API key) — pindah ke curve feed Solana.'); } catch { /* ignore */ }
+    }
   }
 
   // ─── WebSocket ────────────────────────────────────────────────
@@ -119,11 +358,14 @@ export class PumpFunListener {
   private connect() {
     logger.info('🔌 PumpFun listener connecting...');
 
-    this.ws = new WebSocket(PUMPPORTAL_WS);
+    this.ws = new WebSocket(this.pumpPortalUrl());
 
     this.ws.on('open', () => {
       logger.info('✅ PumpFun listener connected — subscribing to new tokens');
       this.ws!.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      // In curve mode prices come from the Solana account feed (which
+      // resubscribes itself), so never ask PumpPortal for trades there.
+      if (this.tradeSource !== 'pumpportal') return;
       // Re-subscribe to any active token price feeds
       if (this.tokenSubs.size > 0) {
         const keys = [...this.tokenSubs.keys()];
@@ -161,14 +403,24 @@ export class PumpFunListener {
 
   private scheduleReconnect(delayMs: number) {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.pumpReconnects++;
     this.reconnectTimer = setTimeout(() => this.connect(), delayMs);
   }
 
   // ─── Message handler ──────────────────────────────────────────
 
   private async handleMessage(msg: any, receivedAtMono?: number) {
-    // Trade event (buy/sell) handling
+    // Keyless trade-subscription rejection → auto fallback to curve feed.
+    if (isPumpPortalKeyRejection(msg)) {
+      this.handleFeedRejection(typeof msg.message === 'string' ? msg.message : 'API key required');
+      return;
+    }
+
+    // Trade event (buy/sell) handling — only meaningful in pumpportal mode
+    // (in curve mode prices arrive via handleCurveUpdate).
     if (msg.mint && (msg.txType === 'buy' || msg.txType === 'sell')) {
+      if (this.tradeSource !== 'pumpportal') return;
+      this.lastFeedUpdateAt = this.clock();
       // Real-time price update for a subscribed (bought) token
       if (this.tokenSubs.has(msg.mint)) {
         const vSol    = parseFloat(msg.vSolInBondingCurve) || 0;
@@ -251,6 +503,10 @@ export class PumpFunListener {
       return;
     }
 
+    // Remember mint → curveKey so price/observer subscriptions can resolve
+    // the PDA later (curve mode) without depending on this event object.
+    this.noteCurveMapping(token.mint, token.bondingCurveKey);
+
     // Feature 1: Dev wallet history check
     if (this.devWalletChecker) {
       const devCheck = await this.devWalletChecker.check(token.creatorWallet);
@@ -272,8 +528,10 @@ export class PumpFunListener {
         this.recentMints.set(token.mint, Date.now());
         this.recentCreators.set(token.creatorWallet, Date.now());
         logger.info(`👁 [${this.stats.received}] ${token.symbol} → observation (${CONFIG.PUMP_OBSERVE_SECONDS}s) | dev: ${token.initialBuySol} SOL | mcap: ${token.marketCapSol} SOL`);
-        // Subscribe to trade events for observed token
-        if (this.ws?.readyState === WebSocket.OPEN) {
+        // Subscribe to trade events for observed token (same source as positions)
+        if (this.tradeSource === 'curve') {
+          this.ensureCurveSub(token.mint);
+        } else if (this.ws?.readyState === WebSocket.OPEN) {
           this.ws.send(JSON.stringify({ method: 'subscribeTokenTrade', keys: [token.mint] }));
         }
         return;
@@ -301,7 +559,9 @@ export class PumpFunListener {
 
   private async handleObservationResult(token: NewPumpToken, result: ObservationResult): Promise<void> {
     // Unsubscribe from trade events for this observed token
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.tradeSource === 'curve') {
+      this.releaseCurveSub(token.mint);
+    } else if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ method: 'unsubscribeTokenTrade', keys: [token.mint] }));
     }
 
@@ -312,6 +572,11 @@ export class PumpFunListener {
           logger.error(`PumpFun callback error (observer): ${err.message}`),
         );
       }
+    } else if (result.noData) {
+      // Feed gap — NOT a market verdict, so it is logged (and counted)
+      // separately from failed observations.
+      this.stats.filtered++;
+      logger.warn(`⏭ Observation no_data: ${token.symbol} — ${result.reason}`);
     } else {
       this.stats.filtered++;
       logger.info(`⏭ Observation failed: ${token.symbol} — ${result.reason}`);

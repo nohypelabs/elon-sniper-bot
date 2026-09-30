@@ -36,6 +36,10 @@ export interface RestoredActivePosition {
   moonbag: boolean;
   peakPnlPercent?: number;
   tweetText?: string;
+  // Stage 10: stale-price watchdog (set to restore time; the live feed
+  // refreshes it via the same subscribePositionFeed path as fresh buys).
+  lastPriceUpdateAt: number;
+  staleAlertSent: boolean;
 }
 
 /**
@@ -104,6 +108,8 @@ export function rowToActivePosition(row: Position, now: number): RestoredActiveP
     sellFailures: 0,
     nextSellAttemptAt: 0,
     moonbag: row.moonbag === true,
+    lastPriceUpdateAt: now,
+    staleAlertSent: false,
   };
   if (typeof row.peakPnlPercent === 'number' && Number.isFinite(row.peakPnlPercent)) {
     pos.peakPnlPercent = row.peakPnlPercent;

@@ -41,6 +41,14 @@ export interface BotState {
   solBalance: number;
   solPriceUsd: number;
   activePositions: ActivePositionInfo[];
+  // Stage 10: real-time price/trade feed health (absent on old producers).
+  feed?: {
+    source: 'pumpportal' | 'curve' | 'none';
+    connected: boolean;
+    subscriptions: number;
+    lastUpdateAgoSec: number | null;
+    reconnects: number;
+  };
   paper?: {
     startUsd: number;
     cashUsd: number;

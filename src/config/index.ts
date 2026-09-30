@@ -83,6 +83,21 @@ export const CONFIG = {
   PUMP_MIN_SOL_VELOCITY:   parseFloat(process.env.PUMP_MIN_SOL_VELOCITY || '0.1'),
   PUMP_MAX_OBSERVE_TOKENS: parseInt(process.env.PUMP_MAX_OBSERVE_TOKENS || '20'),
 
+  // ── Stage 10: keyless real-time price/trade feed (env only, NOT editable).
+  // PUMP_TRADE_FEED: 'auto' (default) | 'pumpportal' | 'curve'.
+  PUMP_TRADE_FEED: ((): 'auto' | 'pumpportal' | 'curve' => {
+    const v = (process.env.PUMP_TRADE_FEED || 'auto').trim().toLowerCase();
+    return v === 'pumpportal' || v === 'curve' ? v : 'auto';
+  })(),
+  SOLANA_WS_URL: process.env.SOLANA_WS_URL || (process.env.HELIUS_API_KEY
+    ? `wss://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`
+    : 'wss://api.mainnet-beta.solana.com'),
+  // Buy-event threshold for curve mode (unique buyers are not observable
+  // from account state, so curve mode counts buy EVENTS instead).
+  PUMP_MIN_BUY_EVENTS: parseInt(
+    process.env.PUMP_MIN_BUY_EVENTS || process.env.PUMP_MIN_UNIQUE_BUYERS || '5',
+  ),
+
   // Multi-level take profit
   TP1_PERCENT:      parseFloat(process.env.TP1_PERCENT || '30'),   // first TP
   TP1_SELL_PERCENT: parseFloat(process.env.TP1_SELL_PERCENT || '50'), // sell 50% at TP1

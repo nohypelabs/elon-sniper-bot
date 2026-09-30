@@ -27,6 +27,10 @@ Built with several coding agents in parallel (opencode, Cline, one aborted freeb
 
 Known limits: paper fills use a fake constant price, so paper PnL ignores latency and slippage (use `/latency` before going live); a concurrent buy can pass `canAfford` twice before the debit; partial fills on live sells are not detected (remaining tokens assume a full fill); the wallet private key is still handled via the dashboard/`.env` (no HSM/keystore).
 
+## Price feed (Stage 10, 2026-09-30)
+
+PumpPortal delivers `subscribeNewToken` for free but answers every `subscribeTokenTrade` with *"only available when connecting with an API key funded with at least 0.02 SOL"* — so with no key the observer never saw a trade and open positions had no real-time price (DexScreener fallback only). New default `PUMP_TRADE_FEED=auto`: uses the keyless **curve feed** (plain Solana `accountSubscribe` on the bonding-curve PDA via `SOLANA_WS_URL`, parsed with `src/scanner/bonding-curve.ts`, one shared socket with backoff reconnect + 30s ping + 90s watchdog in `src/scanner/curve-feed.ts`) unless `PUMPPORTAL_API_KEY` is set — and auto-switches at runtime if the rejection arrives mid-stream (one warning + one Telegram alert per process). Selection lives in `selectTradeSource` (`src/scanner/pumpfun.listener.ts`); `subscribeToTrades` keeps its signature so positions, approval tracking and restored positions all get live prices through the same path. Approximation: trader identities are invisible in account state, so in curve mode the observer (`TokenObserver.onCurveUpdate`) derives buy/sell events from consecutive `realSolReserves` deltas and the unique-buyers rule becomes **buy events ≥ `PUMP_MIN_BUY_EVENTS`**; zero updates yields `no_data` (a feed gap, not a market verdict). Feed health shows in `BotState.feed` + `/status`, and positions with no price for 120s get one Telegram stale alert. Probe: `scripts/probe-curve-feed.ts`. Fixture note: the spec's base64 snapshot and its quoted reserve numbers are two different slots of the same curve (same supply, same 30-SOL floor) — tests encode the quoted numbers exactly and assert the blob structurally.
+
 ## Architecture
 
 ```
