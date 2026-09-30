@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import { EDITABLE_CONFIG, PRESETS, validateConfig } from '../config/editable';
-import { SETTING_META } from '../config/setting-meta';
+import { SETTING_META, visibleKeys } from '../config/setting-meta';
 import {
   EXPIRED_MESSAGE,
   MenuSessions,
@@ -14,6 +14,8 @@ import {
   keyIndex,
   parseCallback,
   parseNumericInput,
+  presetMeta,
+  rangeText,
   renderConfirmToggle,
   renderConfirmValue,
   renderGroup,
@@ -193,7 +195,7 @@ describe('flows', () => {
     const idx = keyIndex('BUY_AMOUNT_USD');
     const r = handleConfigCallback(`cfg:k:${idx}`, ctx);
     assert.ok(r.edit);
-    assert.ok(r.edit.text.includes('Beli USD'));
+    assert.ok(r.edit.text.includes('Ukuran beli'));
     assert.ok(sessions.getInput('c1') !== null);
   });
 
@@ -254,7 +256,7 @@ describe('flows', () => {
     handleConfigCallback(`cfg:k:${keyIndex('BUY_AMOUNT_USD')}`, second.ctx);
     handleConfigText('100', second.ctx);
     const re = handleConfigCallback('cfg:cr', second.ctx);
-    assert.ok(re.edit?.text.includes('Beli USD'));
+    assert.ok(re.edit?.text.includes('Ukuran beli'));
     assert.equal(second.config['BUY_AMOUNT_USD'], 10);
 
     const third = ctxWith(flowConfig());
@@ -357,8 +359,8 @@ describe('flows', () => {
 
   it('preset preview lists only changed keys', () => {
     const s = renderPresetPreview('lowrisk', sampleConfig());
-    assert.ok(s.text.includes('Hold Maks'));
-    assert.ok(!s.text.includes('Beli USD'));
+    assert.ok(s.text.includes('Hold maksimum'));
+    assert.ok(!s.text.includes('Ukuran beli'));
   });
 
   it('preset apply all-or-nothing and undo restores every key', () => {
@@ -424,5 +426,149 @@ describe('lowrisk preset fix', () => {
   it('uses BUY_AMOUNT_USD not BUY_AMOUNT_SOL', () => {
     assert.equal(PRESETS['lowrisk']['BUY_AMOUNT_USD'], 10);
     assert.ok(!('BUY_AMOUNT_SOL' in (PRESETS['lowrisk'] as Record<string, unknown>)));
+  });
+});
+
+const TOGGLE_ORDER = [
+  'AUTO_SELL', 'PUMP_SECURITY_CHECK', 'ANTI_MEV',
+  'MOONBAG_ENABLED', 'TRAILING_TP_ENABLED', 'BUY_APPROVAL_ENABLED',
+] as const;
+
+function allToggles(cfg: Record<string, unknown>, on: boolean): Record<string, unknown> {
+  return { ...cfg, AUTO_SELL: on, PUMP_SECURITY_CHECK: on, ANTI_MEV: on, MOONBAG_ENABLED: on, TRAILING_TP_ENABLED: on, BUY_APPROVAL_ENABLED: on };
+}
+
+describe('12A-R (a) features screen and main Fitur line list the same toggles in order', () => {
+  it('toggle buttons in R1 order; Fitur line matches', () => {
+    const feat = renderGroup('features', allToggles(sampleConfig(), true));
+    const toggleTexts = feat.keyboard.flat()
+      .filter((b) => b.callback_data.startsWith('cfg:t:'))
+      .map((b) => b.text);
+    assert.deepEqual(toggleTexts, TOGGLE_ORDER.map((k) => `✅ ${SETTING_META[k].label}`));
+    const main = renderMain(allToggles(sampleConfig(), true));
+    const line = main.text.split('\n').find((l) => l.startsWith('🛡 Fitur'));
+    assert.ok(line);
+    const names = ['Auto sell', 'Security', 'Anti MEV', 'Moonbag', 'Trailing TP', 'Approval'];
+    let pos = -1;
+    for (const n of names) {
+      const p = line!.indexOf(n);
+      assert.ok(p > pos, `${n} out of order in: ${line}`);
+      pos = p;
+    }
+  });
+});
+
+describe('12A-R (b) dependents only while their toggle is ON, never in other groups', () => {
+  const deps: Array<[string, string]> = [
+    ['MOONBAG_PERCENT', 'MOONBAG_ENABLED'],
+    ['MOONBAG_TRAIL_PERCENT', 'MOONBAG_ENABLED'],
+    ['TRAILING_TP_DROP_PERCENT', 'TRAILING_TP_ENABLED'],
+    ['BUY_APPROVAL_TIMEOUT_SEC', 'BUY_APPROVAL_ENABLED'],
+  ];
+  for (const [dep, toggle] of deps) {
+    it(`${dep} visible iff ${toggle} ON, absent from size/exec/entry`, () => {
+      const has = (s: Screen, k: string): boolean =>
+        s.keyboard.flat().some((b) => b.callback_data === `cfg:k:${keyIndex(k)}`);
+      assert.ok(has(renderGroup('features', { ...sampleConfig(), [toggle]: true }), dep));
+      assert.ok(!has(renderGroup('features', { ...sampleConfig(), [toggle]: false }), dep));
+      for (const g of ['size', 'exec', 'entry'] as const) {
+        assert.ok(!has(renderGroup(g, { ...sampleConfig(), [toggle]: true }), dep), `${dep} leaked into ${g}`);
+        assert.ok(!has(renderGroup(g, { ...sampleConfig(), [toggle]: false }), dep), `${dep} leaked into ${g}`);
+      }
+    });
+  }
+});
+
+describe('12A-R (c) every key reachable exactly once, never duplicated', () => {
+  it('over USD on/off x moonbag/trailing/approval on/off', () => {
+    const combos: Record<string, unknown>[] = [];
+    for (const usd of [10, 0]) {
+      for (const mb of [true, false]) {
+        for (const tr of [true, false]) {
+          for (const ap of [true, false]) {
+            combos.push({
+              ...sampleConfig(),
+              BUY_AMOUNT_USD: usd,
+              MOONBAG_ENABLED: mb,
+              TRAILING_TP_ENABLED: tr,
+              BUY_APPROVAL_ENABLED: ap,
+            });
+          }
+        }
+      }
+    }
+    assert.equal(combos.length, 16);
+    const seen = new Map<string, string>();
+    for (const cfg of combos) {
+      const perCombo = new Set<string>();
+      for (const g of ['size', 'exec', 'entry', 'features'] as const) {
+        const keys = visibleKeys(g, cfg);
+        assert.equal(new Set(keys).size, keys.length, `dup inside ${g}`);
+        for (const k of keys) {
+          assert.ok(!perCombo.has(k), `${k} in two groups at once`);
+          perCombo.add(k);
+          if (!seen.has(k)) seen.set(k, g);
+          assert.equal(seen.get(k), g, `${k} in multiple groups`);
+        }
+      }
+    }
+    assert.deepEqual([...seen.keys()].sort(), [...EDITABLE_CONFIG].sort());
+  });
+});
+
+describe('12A-R (e) hold range text', () => {
+  it("range is '1 mnt – 1.440 mnt' and prompt shows '1 mnt'", () => {
+    assert.equal(rangeText('PUMP_MAX_HOLD_MINUTES'), '1 mnt – 1.440 mnt');
+    const p = renderPrompt('PUMP_MAX_HOLD_MINUTES', sampleConfig());
+    assert.ok(p.text.includes('1 mnt – 1.440 mnt'));
+  });
+});
+
+describe('12A-R (f) USD nonaktif rendering', () => {
+  it('button shows nonaktif, SOL shown, prompt explains', () => {
+    const g = renderGroup('size', { ...sampleConfig(), BUY_AMOUNT_USD: 0 });
+    const texts = g.keyboard.flat().map((b) => b.text);
+    assert.ok(texts.includes('💵 Ukuran beli · nonaktif'));
+    assert.ok(texts.some((t) => t.includes('Ukuran beli (SOL)')));
+    const pr = renderPrompt('BUY_AMOUNT_USD', { ...sampleConfig(), BUY_AMOUNT_USD: 0 });
+    assert.ok(pr.text.includes('nonaktif (pakai SOL)'));
+  });
+});
+
+describe('12A-R (g) PRESET_META fallback', () => {
+  it('unknown preset with <b>& falls back safely', () => {
+    const evil = '<b>&x';
+    const m = presetMeta(evil);
+    assert.equal(m.emoji, '📦');
+    assert.equal(m.title, evil);
+    assert.equal(m.blurb, '');
+    const pv = renderPresetPreview(evil, sampleConfig());
+    assert.ok(!pv.text.includes(evil));
+    assert.ok(pv.text.includes('&lt;b&gt;'));
+  });
+
+  it('lowrisk has friendly name and blurb', () => {
+    const m = presetMeta('lowrisk');
+    assert.equal(m.emoji, '🐢');
+    assert.equal(m.title, 'Low risk');
+    assert.ok(m.blurb.length > 0);
+    const list = renderPresets(sampleConfig());
+    assert.ok(list.keyboard.flat().some((b) => b.text === '🐢 Low risk'));
+    assert.ok(list.text.includes(m.blurb));
+    const pv = renderPresetPreview('lowrisk', sampleConfig());
+    assert.ok(pv.text.includes('Low risk'));
+  });
+});
+
+describe('12A-R (h) undo shares the back row', () => {
+  it('group merges undo with Menu; main keeps undo alone', () => {
+    const banner = '✅ <b>Ukuran beli</b>: $10 → <b>$15</b>';
+    const g = renderGroup('size', sampleConfig(), banner);
+    const last = g.keyboard[g.keyboard.length - 1];
+    assert.deepEqual(last.map((b) => b.text), ['⬅️ Menu', '↩️ Urungkan']);
+    assert.ok(!g.keyboard.slice(0, -1).some((row) => row.some((b) => b.callback_data === 'cfg:u')));
+    const main = renderMain(sampleConfig(), banner);
+    const mlast = main.keyboard[main.keyboard.length - 1];
+    assert.deepEqual(mlast.map((b) => b.text), ['↩️ Urungkan']);
   });
 });

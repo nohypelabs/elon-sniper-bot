@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EDITABLE_CONFIG, RANGES, parseValue, type EditableKey } from './editable';
 import {
   GROUPS,
+  GROUP_ORDER,
   SETTING_META,
   comfortRange,
   fmtNumber,
@@ -166,9 +167,61 @@ describe('visibleKeys/hiddenNote', () => {
   it('hiddenNote lists hidden labels or null', () => {
     assert.equal(hiddenNote('size', { ...base, BUY_AMOUNT_USD: 0, MOONBAG_ENABLED: true }), null);
     const note = hiddenNote('size', base);
-    assert.ok(note && note.startsWith('Tersembunyi karena fitur terkait OFF:'));
-    assert.ok(note!.includes('Beli SOL'));
-    const featNote = hiddenNote('features', base);
-    assert.ok(featNote && featNote.includes('Trail Drop'));
+    assert.ok(note && note.startsWith('Disembunyikan (tidak dipakai saat ini):'));
+    assert.ok(note!.includes('Ukuran beli (SOL)'));
+    assert.equal(hiddenNote('features', base), null);
+    assert.equal(hiddenNote('features', { ...base, MOONBAG_ENABLED: true, TRAILING_TP_ENABLED: true, BUY_APPROVAL_ENABLED: true }), null);
+  });
+});
+
+describe('GROUP_ORDER display order (12A-R)', () => {
+  it('covers every EDITABLE_CONFIG key exactly once and matches meta.group', () => {
+    const all = [...GROUP_ORDER.size, ...GROUP_ORDER.exec, ...GROUP_ORDER.entry, ...GROUP_ORDER.features];
+    assert.equal(all.length, EDITABLE_CONFIG.length);
+    assert.equal(new Set(all).size, EDITABLE_CONFIG.length);
+    assert.deepEqual([...all].sort(), [...EDITABLE_CONFIG].sort());
+    for (const g of ['size', 'exec', 'entry', 'features'] as const) {
+      for (const k of GROUP_ORDER[g]) assert.equal(SETTING_META[k].group, g, `${k} group mismatch`);
+    }
+  });
+
+  it('features toggles in R1 order', () => {
+    const toggles = GROUP_ORDER.features.filter((k) => SETTING_META[k].kind === 'toggle');
+    assert.deepEqual(toggles, [
+      'AUTO_SELL', 'PUMP_SECURITY_CHECK', 'ANTI_MEV',
+      'MOONBAG_ENABLED', 'TRAILING_TP_ENABLED', 'BUY_APPROVAL_ENABLED',
+    ]);
+  });
+});
+
+describe('labels and emoji uniqueness (12A-R)', () => {
+  it('no two settings share a label', () => {
+    const labels = [...EDITABLE_CONFIG].map((k) => SETTING_META[k].label);
+    assert.equal(new Set(labels).size, labels.length);
+  });
+
+  it('emoji unique within each group', () => {
+    for (const g of ['size', 'exec', 'entry', 'features'] as const) {
+      const emojis = GROUP_ORDER[g].map((k) => SETTING_META[k].emoji);
+      assert.equal(new Set(emojis).size, emojis.length, `${g} duplicate emoji`);
+    }
+  });
+});
+
+describe('hold runtime range (12A-R R4)', () => {
+  it("parseValue rejects '0' and accepts '1'", () => {
+    assert.equal(typeof parseValue('PUMP_MAX_HOLD_MINUTES', '0'), 'string');
+    assert.equal(parseValue('PUMP_MAX_HOLD_MINUTES', '1'), 1);
+  });
+
+  it('meta carries runtimeMin 1', () => {
+    assert.equal(SETTING_META['PUMP_MAX_HOLD_MINUTES'].runtimeMin, 1);
+  });
+});
+
+describe('USD off display (12A-R R5)', () => {
+  it("fmtValue 0 -> 'nonaktif'", () => {
+    assert.equal(fmtValue('BUY_AMOUNT_USD', 0), 'nonaktif');
+    assert.equal(fmtValue('BUY_AMOUNT_USD', 10), '$10');
   });
 });

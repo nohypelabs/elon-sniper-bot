@@ -60,6 +60,25 @@ export function presetNames(): string[] {
   return Object.keys(PRESETS);
 }
 
+export interface PresetMeta {
+  emoji: string;
+  title: string;
+  blurb: string;
+}
+
+export const PRESET_META: Record<string, PresetMeta> = {
+  lowrisk: {
+    emoji: '🐢',
+    title: 'Low risk',
+    blurb: 'Beli $10, maks 3 posisi, hold 5 mnt, dev buy ≥ 0,5 SOL, security ON',
+  },
+};
+
+/** Friendly preset metadata; unknown names fall back to the raw name. */
+export function presetMeta(name: string): PresetMeta {
+  return PRESET_META[name] ?? { emoji: '📦', title: name, blurb: '' };
+}
+
 export function keyIndex(key: string): number {
   return (EDITABLE_CONFIG as readonly string[]).indexOf(key);
 }
@@ -137,7 +156,8 @@ export function rangeText(key: string): string {
   const meta = (SETTING_META as Record<string, (typeof SETTING_META)[EditableKey] | undefined>)[key];
   const range = RANGES[key];
   if (!range) return '-';
-  const loD = toDisplay(key, range.min);
+  const minStored = meta?.runtimeMin ?? range.min;
+  const loD = toDisplay(key, minStored);
   const hiD = toDisplay(key, range.max);
   const lo = fmtNumber(loD, meta?.decimals ?? 2);
   const hi = fmtNumber(hiD, meta?.decimals ?? 2);
@@ -166,11 +186,13 @@ export function comfortText(key: EditableKey): string {
   return `${lo} – ${hi}`;
 }
 
-function withUndoRow(kb: Keyboard, banner: string | undefined): Keyboard {
-  if (banner && banner.startsWith('✅')) {
-    return [...kb, [{ text: '↩️ Urungkan', callback_data: 'cfg:u' }]];
+function withUndoRow(kb: Keyboard, banner: string | undefined, mergeWithLast = false): Keyboard {
+  if (!banner || !banner.startsWith('✅')) return kb;
+  if (mergeWithLast && kb.length > 0) {
+    const last = kb[kb.length - 1];
+    return [...kb.slice(0, -1), [...last, { text: '↩️ Urungkan', callback_data: 'cfg:u' }]];
   }
-  return kb;
+  return [...kb, [{ text: '↩️ Urungkan', callback_data: 'cfg:u' }]];
 }
 
 // ── Banners ──────────────────────────────────────────────────────
@@ -231,7 +253,7 @@ export function renderMain(config: Record<string, unknown>, banner?: string): Sc
   const devMax = typeof devMaxRaw === 'number' && Number.isFinite(devMaxRaw) ? fmtNumber(devMaxRaw, 3) : '-';
   lines.push(`🔎 Entry  maks <b>${escapeHtml(pos)}</b> posisi · hold maks <b>${escapeHtml(hold)}</b> mnt · dev buy <b>${escapeHtml(devMin)}</b>–<b>${escapeHtml(devMax)}</b> SOL`);
   lines.push(
-    `🛡 Fitur  Security ${boolIcon(config['PUMP_SECURITY_CHECK'])} · Trailing TP ${boolIcon(config['TRAILING_TP_ENABLED'])} · Approval ${boolIcon(config['BUY_APPROVAL_ENABLED'])} · Auto sell ${boolIcon(config['AUTO_SELL'])}`,
+    `🛡 Fitur  Auto sell ${boolIcon(config['AUTO_SELL'])} · Security ${boolIcon(config['PUMP_SECURITY_CHECK'])} · Anti MEV ${boolIcon(config['ANTI_MEV'])} · Moonbag ${boolIcon(config['MOONBAG_ENABLED'])} · Trailing TP ${boolIcon(config['TRAILING_TP_ENABLED'])} · Approval ${boolIcon(config['BUY_APPROVAL_ENABLED'])}`,
   );
   lines.push('');
   lines.push('<i>Pilih kategori, lalu ketuk setelan yang mau diubah.</i>');
@@ -242,7 +264,7 @@ export function renderMain(config: Record<string, unknown>, banner?: string): Sc
     ],
     [
       { text: '🔎 Filter Entry', callback_data: 'cfg:g:entry' },
-      { text: '🛡 Fitur ON/OFF', callback_data: 'cfg:g:features' },
+      { text: '🛡 Fitur & Opsinya', callback_data: 'cfg:g:features' },
     ],
     [
       { text: '📦 Preset', callback_data: 'cfg:p' },
@@ -251,6 +273,22 @@ export function renderMain(config: Record<string, unknown>, banner?: string): Sc
     [{ text: '🔄 Segarkan', callback_data: 'cfg:r' }],
   ];
   return { text: lines.join('\n'), keyboard: withUndoRow(kb, banner) };
+}
+
+function toggleButton(key: EditableKey, config: Record<string, unknown>): { text: string; callback_data: string } {
+  const meta = SETTING_META[key];
+  const idx = keyIndex(key);
+  const on = config[key] === true;
+  return { text: `${on ? '✅' : '⬜'} ${meta.label}`, callback_data: `cfg:t:${idx}` };
+}
+
+function numericButton(key: EditableKey, config: Record<string, unknown>): { text: string; callback_data: string } {
+  const meta = SETTING_META[key];
+  const idx = keyIndex(key);
+  return {
+    text: `${meta.emoji} ${meta.label} · ${fmtValue(key, config[key])}`,
+    callback_data: `cfg:k:${idx}`,
+  };
 }
 
 export function renderGroup(group: SettingGroup, config: Record<string, unknown>, banner?: string): Screen {
@@ -262,31 +300,50 @@ export function renderGroup(group: SettingGroup, config: Record<string, unknown>
   const note = hiddenNote(group, config);
   if (note) lines.push(`<i>${escapeHtml(note)}</i>`);
   const kb: Keyboard = [];
-  const keys = visibleKeys(group, config);
-  for (let i = 0; i < keys.length; i += 2) {
-    const row: { text: string; callback_data: string }[] = [];
-    for (const key of keys.slice(i, i + 2)) {
-      const meta = SETTING_META[key];
-      const idx = keyIndex(key);
-      if (meta.kind === 'toggle') {
-        const on = config[key] === true;
-        row.push({ text: `${on ? '✅' : '⬜'} ${meta.label}`, callback_data: `cfg:t:${idx}` });
-      } else {
-        row.push({
-          text: `${meta.emoji} ${meta.label} · ${fmtValue(key, config[key])}`,
-          callback_data: `cfg:k:${idx}`,
-        });
+  if (group === 'features') {
+    const vis = new Set(visibleKeys(group, config));
+    const trow = (keys: EditableKey[]): void => {
+      const row = keys.filter((k) => vis.has(k)).map((k) => toggleButton(k, config));
+      if (row.length > 0) kb.push(row);
+    };
+    const nrow = (keys: EditableKey[]): void => {
+      const row = keys.filter((k) => vis.has(k)).map((k) => numericButton(k, config));
+      if (row.length > 0) kb.push(row);
+    };
+    // Independent toggles share a row (two per row); toggles with dependents
+    // get their own row with dependents on the next row.
+    trow(['AUTO_SELL', 'PUMP_SECURITY_CHECK']);
+    trow(['ANTI_MEV']);
+    trow(['MOONBAG_ENABLED']);
+    nrow(['MOONBAG_PERCENT', 'MOONBAG_TRAIL_PERCENT']);
+    trow(['TRAILING_TP_ENABLED']);
+    nrow(['TRAILING_TP_DROP_PERCENT']);
+    trow(['BUY_APPROVAL_ENABLED']);
+    nrow(['BUY_APPROVAL_TIMEOUT_SEC']);
+  } else {
+    const keys = visibleKeys(group, config);
+    for (let i = 0; i < keys.length; i += 2) {
+      const row: { text: string; callback_data: string }[] = [];
+      for (const key of keys.slice(i, i + 2)) {
+        const meta = SETTING_META[key];
+        if (meta.kind === 'toggle') {
+          row.push(toggleButton(key, config));
+        } else {
+          row.push(numericButton(key, config));
+        }
       }
+      kb.push(row);
     }
-    kb.push(row);
   }
   kb.push([{ text: '⬅️ Menu', callback_data: 'cfg:m' }]);
-  return { text: lines.join('\n'), keyboard: withUndoRow(kb, banner) };
+  return { text: lines.join('\n'), keyboard: withUndoRow(kb, banner, true) };
 }
 
 export function renderPrompt(key: EditableKey, config: Record<string, unknown>, opts?: { error?: string }): Screen {
   const meta = SETTING_META[key];
-  const current = fmtValue(key, config[key]);
+  const current = key === 'BUY_AMOUNT_USD' && config[key] === 0
+    ? 'nonaktif (pakai SOL)'
+    : fmtValue(key, config[key]);
   const lines: string[] = [];
   if (opts?.error) lines.push(`❌ ${escapeHtml(opts.error)}`);
   lines.push(`${meta.emoji} <b>${escapeHtml(meta.label)}</b>`);
@@ -309,7 +366,7 @@ export function renderPrompt(key: EditableKey, config: Record<string, unknown>, 
     });
     kb.push(row);
   }
-  kb.push([{ text: '⬅️ Kembali', callback_data: `cfg:g:${meta.group}` }]);
+  kb.push([{ text: `⬅️ ${groupInfo(meta.group).title}`, callback_data: `cfg:g:${meta.group}` }]);
   return { text: lines.join('\n'), keyboard: kb };
 }
 
@@ -363,7 +420,14 @@ export function renderPresets(config: Record<string, unknown>, banner?: string):
   const lines = ['📦 <b>Preset</b>', '<i>Pilih preset untuk pratinjau sebelum diterapkan.</i>'];
   if (banner) lines.unshift(banner);
   const names = presetNames();
-  const kb: Keyboard = names.map((name, i) => [{ text: `📦 ${name}`, callback_data: `cfg:pp:${i}` }]);
+  for (const name of names) {
+    const blurb = presetMeta(name).blurb;
+    if (blurb) lines.push(`<i>${escapeHtml(blurb)}</i>`);
+  }
+  const kb: Keyboard = names.map((name, i) => {
+    const m = presetMeta(name);
+    return [{ text: `${m.emoji} ${m.title}`, callback_data: `cfg:pp:${i}` }];
+  });
   kb.push([{ text: '⬅️ Menu', callback_data: 'cfg:m' }]);
   return { text: lines.join('\n'), keyboard: withUndoRow(kb, banner) };
 }
@@ -372,9 +436,10 @@ export function renderPresetPreview(presetName: string, config: Record<string, u
   const preset = PRESETS[presetName] as Record<string, number | boolean> | undefined;
   const names = presetNames();
   const idx = names.indexOf(presetName);
+  const meta = presetMeta(presetName);
   const lines: string[] = [];
   if (banner) lines.push(banner);
-  lines.push(`📦 <b>Preset ${escapeHtml(presetName)}</b>`);
+  lines.push(`${meta.emoji} <b>Preset ${escapeHtml(meta.title)}</b>`);
   if (!preset) {
     lines.push('Preset tidak ditemukan.');
     return { text: lines.join('\n'), keyboard: [[{ text: '↩️ Kembali', callback_data: 'cfg:p' }]] };
@@ -406,12 +471,12 @@ export function renderPresetPreview(presetName: string, config: Record<string, u
 export function renderHelp(): Screen {
   const text = [
     '❓ <b>Bantuan Pengaturan</b>',
-    '1️⃣ Ketuk setelan, lalu ketik angkanya saja.',
-    '🔀 Ketuk tombol ✅/⬜ untuk nyala/mati.',
-    '↩️ Perubahan bisa diurungkan 5 menit.',
-    '⚠️ Nilai tak biasa minta konfirmasi dulu.',
-    '⌨️ Ketik <code>batal</code> untuk keluar.',
-    '🔧 <code>/set</code> dan <code>/preset</code> tetap bisa dipakai.',
+    '✏️ Ketuk setelan, lalu ketik angkanya saja.',
+    '👆 Tombol ✅ dan ⬜ langsung menyalakan atau mematikan.',
+    '↩️ Setiap perubahan bisa diurungkan selama 5 menit.',
+    '⚠️ Nilai yang tidak biasa akan diminta konfirmasi dulu.',
+    '🚪 Ketik <code>batal</code> untuk keluar dari pengisian.',
+    '🔧 <code>/set</code> dan <code>/preset</code> tetap bisa dipakai sebagai jalan pintas.',
   ].join('\n');
   return { text, keyboard: [[{ text: '⬅️ Menu', callback_data: 'cfg:m' }]] };
 }
@@ -845,6 +910,24 @@ export interface NamedScreen {
 export function buildGoldenScreens(sample: Record<string, unknown>): NamedScreen[] {
   const noChange = { ...(sample as Record<string, unknown>), ...(PRESETS['lowrisk'] as Record<string, number | boolean>) };
   const bannerUndo = successBannerSingle('BUY_AMOUNT_USD', 10, 15);
+  const allTogglesOn: Record<string, unknown> = {
+    ...sample,
+    AUTO_SELL: true,
+    PUMP_SECURITY_CHECK: true,
+    ANTI_MEV: true,
+    MOONBAG_ENABLED: true,
+    TRAILING_TP_ENABLED: true,
+    BUY_APPROVAL_ENABLED: true,
+  };
+  const allTogglesOff: Record<string, unknown> = {
+    ...sample,
+    AUTO_SELL: false,
+    PUMP_SECURITY_CHECK: false,
+    ANTI_MEV: false,
+    MOONBAG_ENABLED: false,
+    TRAILING_TP_ENABLED: false,
+    BUY_APPROVAL_ENABLED: false,
+  };
   return [
     { name: 'main', screen: renderMain(sample) },
     { name: 'main-moonbag-off', screen: renderMain({ ...sample, MOONBAG_ENABLED: false }) },
@@ -853,6 +936,8 @@ export function buildGoldenScreens(sample: Record<string, unknown>): NamedScreen
     { name: 'group-exec', screen: renderGroup('exec', sample) },
     { name: 'group-entry', screen: renderGroup('entry', sample) },
     { name: 'group-features', screen: renderGroup('features', sample) },
+    { name: 'group-features-all-on', screen: renderGroup('features', allTogglesOn) },
+    { name: 'group-features-all-off', screen: renderGroup('features', allTogglesOff) },
     { name: 'group-size-usd-off', screen: renderGroup('size', { ...sample, BUY_AMOUNT_USD: 0 }) },
     { name: 'prompt-buy-usd', screen: renderPrompt('BUY_AMOUNT_USD', sample) },
     { name: 'prompt-slippage', screen: renderPrompt('MAX_SLIPPAGE_BPS', sample) },
