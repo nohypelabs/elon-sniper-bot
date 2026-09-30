@@ -1,0 +1,7 @@
+[Unit]
+Description=Minipc health check (SSH, service, log freshness)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/minipc-monitor.sh
+TimeoutStartSec=45
